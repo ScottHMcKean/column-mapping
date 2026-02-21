@@ -1,0 +1,6 @@
+orderID,customer-email,OrderAmt,order_status,created_timestamp,shipaddress,paymenttype,Discount%,tax_$,shipped_date
+ORD-001,sales@techcorp.com,5250.00,completed,2024-01-15T10:23:44.000-05:00,"123 Market St, SF, CA",credit_card,5.00,420.00,2024-01-16
+ORD-002,contact@dataworks.io,1850.75,completed,2024-01-16T14:56:12.000-05:00,"456 Innovation Dr, PA, CA",paypal,10.00,148.06,2024-01-17
+ORD-003,info@cloudstart.com,625.00,pending,2024-01-17T09:34:28.000-05:00,"789 Startup Ln, MV, CA",credit_card,0.00,50.00,null
+ORD-004,admin@globalsync.com,12500.50,completed,2024-01-18T16:12:55.000-05:00,"321 Corporate Blvd, NY, NY",wire_transfer,15.00,1000.04,2024-01-19
+ORD-005,hello@smallbiz.net,445.00,completed,2024-01-19T11:45:33.000-05:00,"654 Main St, Oakland, CA",paypal,5.00,35.60,2024-01-20

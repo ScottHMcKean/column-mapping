@@ -1,0 +1,48 @@
+resources:
+  jobs:
+    column_mapping_setup_vector_search:
+      name: column-mapping-setup-vector-search
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: setup
+          job_cluster_key: default
+          notebook_task:
+            notebook_path: ${workspace.root_path}/files/notebooks/01_setup_data_and_vector_search
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              table_prefix: ${var.table_prefix}
+              vs_endpoint_name: ${var.vs_endpoint_name}
+              vs_index_name: ${var.vs_index_name}
+              embedding_model_endpoint: ${var.embedding_model_endpoint}
+              create_endpoint_if_missing: "true"
+      job_clusters:
+        - job_cluster_key: default
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type_id}
+            num_workers: ${var.num_workers}
+
+    column_mapping_run_agentic:
+      name: column-mapping-run-agentic
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: run
+          job_cluster_key: default
+          notebook_task:
+            notebook_path: ${workspace.root_path}/files/notebooks/02_run_column_mapping_agentic
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              table_prefix: ${var.table_prefix}
+              vs_endpoint_name: ${var.vs_endpoint_name}
+              vs_index_name: ${var.vs_index_name}
+              llm_endpoint: ${var.llm_endpoint}
+              top_k: ${var.top_k}
+      job_clusters:
+        - job_cluster_key: default
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type_id}
+            num_workers: ${var.num_workers}
+

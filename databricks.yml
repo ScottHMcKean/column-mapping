@@ -1,0 +1,36 @@
+bundle:
+  name: column-mapping
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    default: ""
+  schema:
+    default: ""
+  table_prefix:
+    default: ""
+  vs_endpoint_name:
+    default: ""
+  vs_index_name:
+    default: ""
+  embedding_model_endpoint:
+    default: ""
+  llm_endpoint:
+    default: ""
+  top_k:
+    default: ""
+
+  # Job compute defaults. Override per-workspace if needed.
+  spark_version:
+    default: 15.4.x-scala2.12
+  node_type_id:
+    default: Standard_DS3_v2
+  num_workers:
+    default: 1
+
+workspace:
+  # Bundle files (including notebooks/) are synced here during `databricks bundle deploy`.
+  root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+

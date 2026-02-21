@@ -1,0 +1,6 @@
+AcctID,Customer_Name,EmailAddr,Phone,AcctStatus,TotalRev,Signup_Date,AccountMgr,CustTier,LastModified_TS
+ACCT-001,TechCorp Solutions,sales@techcorp.com,(415) 555-0100,Active,250000.00,2022-03-15,Sarah Chen,Enterprise,2024-01-20T14:30:22.000-05:00
+ACCT-002,DataWorks LLC,contact@dataworks.io,(650) 555-0234,Active,75000.50,2023-01-22,Mike Rodriguez,SMB,2024-01-19T09:15:45.000-05:00
+ACCT-003,CloudStart Ventures,info@cloudstart.com,(408) 555-0567,Active,12500.00,2023-06-10,Sarah Chen,Startup,2024-01-18T16:42:11.000-05:00
+ACCT-004,GlobalSync Intl,admin@globalsync.com,(212) 555-0890,Inactive,450000.75,2021-11-03,James Park,Enterprise,2023-12-15T11:20:33.000-05:00
+ACCT-005,SmallBiz Partners,hello@smallbiz.net,(510) 555-0345,Active,8900.00,2023-09-28,Mike Rodriguez,SMB,2024-01-21T13:55:17.000-05:00
