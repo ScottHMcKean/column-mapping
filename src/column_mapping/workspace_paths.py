@@ -25,6 +25,8 @@ def get_repo_paths(dbutils) -> RepoPaths:
         .notebookPath()
         .get()
     )
+    if not nb_path.startswith("/Workspace/"):
+        nb_path = f"/Workspace{nb_path}"
     # Example notebook path:
     # /Workspace/Repos/user@example.com/column-mapping/notebooks/01_setup...
     parts = nb_path.split("/")

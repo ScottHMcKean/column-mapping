@@ -6,31 +6,21 @@ include:
 
 variables:
   catalog:
-    default: ""
+    default: shm
   schema:
-    default: ""
+    default: columnmapping
   table_prefix:
-    default: ""
+    default: silver
   vs_endpoint_name:
-    default: ""
+    default: dbdemos_vs_endpoint
   vs_index_name:
-    default: ""
+    default: standardization_mappings_index
   embedding_model_endpoint:
-    default: ""
+    default: databricks-bge-large-en
   llm_endpoint:
-    default: ""
+    default: databricks-claude-sonnet-4-5
   top_k:
-    default: ""
-
-  # Job compute defaults. Override per-workspace if needed.
-  spark_version:
-    default: 15.4.x-scala2.12
-  node_type_id:
-    default: Standard_DS3_v2
-  num_workers:
-    default: 1
+    default: 5
 
 workspace:
-  # Bundle files (including notebooks/) are synced here during `databricks bundle deploy`.
   root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
-

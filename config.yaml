@@ -1,19 +1,15 @@
 databricks:
-  catalog: main
-  schema: column_mapping_demo
+  catalog: shm
+  schema: columnmapping
   table_prefix: silver
 
 tables:
-  # Fully qualified names are derived as: ${catalog}.${schema}.${name}
-  rules_table_name: governance_standardization_rules
-  mappings_table_name: governance_standardization_mappings
+  rules_table_name: standardization_rules
+  mappings_table_name: standardization_mappings
 
 vector_search:
-  # If empty, the notebooks will prefer an already ONLINE endpoint.
-  # If none exist, setup will create `column_mapping_vs_endpoint`.
-  endpoint_name: ""
-  endpoint_type: STANDARD
-  index_name: governance_standardization_mappings_index
+  endpoint_name: dbdemos_vs_endpoint
+  index_name: standardization_mappings_index
   embedding_model_endpoint: databricks-bge-large-en
   delta_sync:
     primary_key: mapping_id
@@ -21,9 +17,7 @@ vector_search:
     pipeline_type: TRIGGERED
 
 llm:
-  # Used by ai_query() inside the mapping notebook
-  endpoint: databricks-claude-haiku-4-5
+  endpoint: databricks-claude-sonnet-4-5
 
 mapping:
   top_k: 5
-

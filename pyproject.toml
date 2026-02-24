@@ -8,15 +8,21 @@ version = "0.1.0"
 description = "Agentic column mapping via Vector Search + rules"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "pyyaml>=6.0",
+]
 
 [project.optional-dependencies]
 # Minimal for running notebooks on Databricks (most dependencies are provided by the runtime).
-prod = []
+prod = [
+    "databricks-sdk>=0.91.0",
+]
 # Local development / CI tooling.
 dev = [
-  "pytest>=8.0.0",
-  "ruff>=0.5.0",
+    "pytest>=8.0.0",
+    "ruff>=0.5.0",
+    "databricks-sdk>=0.91.0",
+    "streamlit>=1.54.0",
 ]
 
 [tool.hatch.build.targets.wheel]

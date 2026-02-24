@@ -1,0 +1,2 @@
+streamlit>=1.54.0
+databricks-sdk>=0.91.0

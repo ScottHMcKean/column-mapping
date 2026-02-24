@@ -34,53 +34,37 @@ def pick_best_active_endpoint(vsc) -> Optional[str]:
     return sorted(online)[0] if online else None
 
 
-def ensure_endpoint(
-    *,
-    vsc,
-    preferred_name: Optional[str],
-    endpoint_type: str = "STANDARD",
-    create_if_missing: bool = True,
-    poll_seconds: int = 5,
-    timeout_seconds: int = 600,
-) -> str:
-    """Choose an existing ONLINE endpoint, or create/poll a named endpoint."""
-    if preferred_name:
-        try:
-            ep = vsc.get_endpoint(preferred_name)
-            state = _endpoint_state(ep)
-            if state == "ONLINE":
-                return preferred_name
-        except Exception:
-            pass
+def validate_endpoint(*, vsc, endpoint_name: str) -> str:
+    """Validate that the named endpoint exists and is ONLINE.
 
-    best = pick_best_active_endpoint(vsc)
-    if best:
-        return best
+    Raises immediately if the name is blank or the endpoint is not found / not ONLINE.
+    This function never creates an endpoint.
+    """
+    if not endpoint_name or not endpoint_name.strip():
+        raise ValueError(
+            "Vector Search endpoint name is blank. "
+            "Set 'vector_search.endpoint_name' in config.yaml or pass the "
+            "'vs_endpoint_name' parameter."
+        )
 
-    if not preferred_name:
-        preferred_name = "column_mapping_vs_endpoint"
-
-    if not create_if_missing:
-        raise ValueError("No active Vector Search endpoint found and create_if_missing=False")
+    endpoint_name = endpoint_name.strip()
 
     try:
-        vsc.create_endpoint(name=preferred_name, endpoint_type=endpoint_type)
-    except Exception:
-        # Endpoint may already exist (race); proceed to polling.
-        pass
+        ep = vsc.get_endpoint(endpoint_name)
+    except Exception as exc:
+        raise ValueError(
+            f"Vector Search endpoint '{endpoint_name}' was not found. "
+            f"Create it manually in the Databricks workspace before running this job."
+        ) from exc
 
-    start = time.time()
-    while True:
-        ep = vsc.get_endpoint(preferred_name)
-        state = _endpoint_state(ep)
-        if state == "ONLINE":
-            return preferred_name
-        if time.time() - start > timeout_seconds:
-            raise TimeoutError(
-                f"Vector Search endpoint '{preferred_name}' did not become ONLINE "
-                f"within {timeout_seconds}s (state={state})."
-            )
-        time.sleep(poll_seconds)
+    state = _endpoint_state(ep)
+    if state != "ONLINE":
+        raise ValueError(
+            f"Vector Search endpoint '{endpoint_name}' exists but is not ONLINE "
+            f"(state={state}). Wait for it to finish provisioning or use a different endpoint."
+        )
+
+    return endpoint_name
 
 
 def ensure_delta_sync_index(
@@ -122,4 +106,3 @@ def wait_for_index_ready(*, index, poll_seconds: int = 10, timeout_seconds: int 
         if time.time() - start > timeout_seconds:
             raise TimeoutError(f"Index did not become ready within {timeout_seconds}s")
         time.sleep(poll_seconds)
-

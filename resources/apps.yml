@@ -1,0 +1,6 @@
+resources:
+  apps:
+    column_mapping_review:
+      name: column-mapping-review
+      description: "Review and manage column mapping approvals"
+      source_code_path: ../app

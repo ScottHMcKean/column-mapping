@@ -14,6 +14,7 @@
 # COMMAND ----------
 
 import sys
+import importlib.util
 from typing import List
 
 from databricks.vector_search.client import VectorSearchClient
@@ -52,11 +53,21 @@ nb_path = (
     .notebookPath()
     .get()
 )
+if not nb_path.startswith("/Workspace/"):
+    nb_path = f"/Workspace{nb_path}"
 parts = nb_path.split("/")
 repo_root_ws = "/".join(parts[: parts.index("notebooks")]) if "notebooks" in parts else "/".join(parts[:-1])
-src_path = f"{repo_root_ws}/src"
-if src_path not in sys.path:
-    sys.path.append(src_path)
+if importlib.util.find_spec("column_mapping") is None:
+    ws_src = f"file:{repo_root_ws}/src"
+    dbfs_dst = "dbfs:/tmp/column-mapping-src"
+    try:
+        dbutils.fs.rm(dbfs_dst, True)
+    except Exception:
+        pass
+    dbutils.fs.cp(ws_src, dbfs_dst, recurse=True)
+    local_src = "/dbfs/tmp/column-mapping-src"
+    if local_src not in sys.path:
+        sys.path.insert(0, local_src)
 
 from column_mapping.config import compute_effective_config, load_repo_config
 from column_mapping.agentic_mapping import (
@@ -65,7 +76,7 @@ from column_mapping.agentic_mapping import (
     source_system_from_table,
     standardize_column_agentic,
 )
-from column_mapping.vector_search import ensure_endpoint
+from column_mapping.vector_search import validate_endpoint
 
 # COMMAND ----------
 
@@ -84,11 +95,7 @@ cfg = compute_effective_config(
 )
 
 vsc = VectorSearchClient()
-endpoint_name = ensure_endpoint(
-    vsc=vsc,
-    preferred_name=cfg.vs_endpoint_name,
-    create_if_missing=False,
-)
+endpoint_name = validate_endpoint(vsc=vsc, endpoint_name=cfg.vs_endpoint_name)
 
 index = vsc.get_index(endpoint_name=endpoint_name, index_name=cfg.vs_index_full_name)
 idx_status = index.describe()

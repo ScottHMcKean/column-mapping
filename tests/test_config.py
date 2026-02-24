@@ -1,3 +1,5 @@
+import pytest
+
 from column_mapping.config import compute_effective_config
 
 
@@ -9,7 +11,10 @@ def test_compute_effective_config_defaults_and_fqns() -> None:
                 "rules_table_name": "rules_tbl",
                 "mappings_table_name": "mappings_tbl",
             },
-            "vector_search": {"index_name": "my_index"},
+            "vector_search": {
+                "endpoint_name": "my_endpoint",
+                "index_name": "my_index",
+            },
             "llm": {"endpoint": "llm-x"},
             "mapping": {"top_k": 7},
         }
@@ -20,6 +25,7 @@ def test_compute_effective_config_defaults_and_fqns() -> None:
     assert cfg.table_prefix == "silver"
     assert cfg.rules_table == "c1.s1.rules_tbl"
     assert cfg.mappings_table == "c1.s1.mappings_tbl"
+    assert cfg.vs_endpoint_name == "my_endpoint"
     assert cfg.vs_index_full_name == "c1.s1.my_index"
     assert cfg.llm_endpoint == "llm-x"
     assert cfg.top_k == 7
@@ -27,7 +33,10 @@ def test_compute_effective_config_defaults_and_fqns() -> None:
 
 def test_compute_effective_config_overrides() -> None:
     cfg = compute_effective_config(
-        config={"databricks": {"catalog": "c1", "schema": "s1"}},
+        config={
+            "databricks": {"catalog": "c1", "schema": "s1"},
+            "vector_search": {"endpoint_name": "default_ep"},
+        },
         catalog="c2",
         schema="s2",
         rules_table="x.y.rules",
@@ -49,3 +58,21 @@ def test_compute_effective_config_overrides() -> None:
     assert cfg.llm_endpoint == "llm2"
     assert cfg.top_k == 3
 
+
+def test_compute_effective_config_errors_on_blank_endpoint() -> None:
+    with pytest.raises(ValueError, match="endpoint name must be set"):
+        compute_effective_config(
+            config={
+                "databricks": {"catalog": "c1", "schema": "s1"},
+                "vector_search": {"endpoint_name": ""},
+            }
+        )
+
+
+def test_compute_effective_config_errors_on_missing_endpoint() -> None:
+    with pytest.raises(ValueError, match="endpoint name must be set"):
+        compute_effective_config(
+            config={
+                "databricks": {"catalog": "c1", "schema": "s1"},
+            }
+        )
