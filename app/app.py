@@ -7,38 +7,44 @@ rows to a separate ``column_approvals`` table.
 """
 
 import os
+import sys
+import traceback
 from datetime import datetime, timezone
+
+
+def _log(msg):
+    print(f"[app] {msg}", file=sys.stderr, flush=True)
+
+
+_log("app.py: module load starting")
 
 import pandas as pd
 import streamlit as st
 from databricks.sdk import WorkspaceClient
 
+_log(f"streamlit {st.__version__} on Python {sys.version_info[:2]}")
+
 # ---------------------------------------------------------------------------
-# Theme / styling
+# Page config (must be first Streamlit call)
 # ---------------------------------------------------------------------------
 
 st.set_page_config(page_title="Column Mapping Review", layout="wide")
 
 _DATABRICKS_CSS = """
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap');
-
     html, body, [class*="css"] {
         font-family: 'DM Sans', sans-serif;
     }
-
     h1, h2, h3, h4, h5, h6,
     .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
         font-family: 'DM Sans', sans-serif;
         color: #FF3621 !important;
     }
-
     [data-testid="stSidebarContent"] h1,
     [data-testid="stSidebarContent"] h2,
     [data-testid="stSidebarContent"] h3 {
         color: #FF3621 !important;
     }
-
     .stButton > button[kind="primary"],
     .stButton > button[data-testid="stBaseButton-primary"] {
         background-color: #FF3621;
@@ -49,11 +55,9 @@ _DATABRICKS_CSS = """
         background-color: #E02E1B;
         border-color: #E02E1B;
     }
-
     [data-testid="stMetricValue"] {
         color: #1B3139;
     }
-
     hr {
         border-color: #FF3621 !important;
         opacity: 0.3;
@@ -71,6 +75,9 @@ MAPPINGS_TABLE = os.getenv(
 )
 APPROVALS_TABLE = os.getenv("APPROVALS_TABLE", "shm.columnmapping.column_approvals")
 WAREHOUSE_ID = os.getenv("DATABRICKS_WAREHOUSE_ID", "")
+
+_log(f"config: MAPPINGS_TABLE={MAPPINGS_TABLE}")
+_log(f"config: WAREHOUSE_ID={'(set)' if WAREHOUSE_ID else '(NOT SET)'}")
 
 DISPLAY_COLUMNS = [
     "mapping_id",
@@ -90,16 +97,15 @@ DISPLAY_COLUMNS = [
 
 
 @st.cache_resource
-def get_workspace_client() -> WorkspaceClient:
-    return WorkspaceClient()
+def get_workspace_client():
+    _log("creating WorkspaceClient()")
+    wc = WorkspaceClient()
+    _log("WorkspaceClient created ok")
+    return wc
 
 
-def get_current_user() -> str:
-    """Resolve the authenticated user email.
-
-    On Databricks Apps the platform injects identity headers via OBO.
-    Falls back to the SDK ``current_user.me()`` for local development.
-    """
+def get_current_user():
+    """Resolve the authenticated user email via OBO headers or SDK."""
     try:
         headers = st.context.headers
         for key in (
@@ -112,7 +118,6 @@ def get_current_user() -> str:
                 return val
     except Exception:
         pass
-
     try:
         me = get_workspace_client().current_user.me()
         return me.user_name or me.display_name or "unknown"
@@ -120,32 +125,36 @@ def get_current_user() -> str:
         return "unknown"
 
 
-def execute_query(query: str) -> list[dict]:
+def execute_query(query):
     """Run a read-only SQL statement via the Statement Execution API."""
-    ws = get_workspace_client()
     if not WAREHOUSE_ID:
         raise RuntimeError("DATABRICKS_WAREHOUSE_ID environment variable is not set.")
+    ws = get_workspace_client()
     resp = ws.statement_execution.execute_statement(
         warehouse_id=WAREHOUSE_ID,
         statement=query,
         wait_timeout="30s",
     )
+    if resp.status and resp.status.error:
+        raise RuntimeError(f"SQL error: {resp.status.error.message}")
     if resp.result and resp.result.data_array:
         columns = [c.name for c in resp.manifest.schema.columns]
         return [dict(zip(columns, row)) for row in resp.result.data_array]
     return []
 
 
-def execute_statement(query: str) -> None:
+def execute_statement(query):
     """Run a DML / DDL statement."""
-    ws = get_workspace_client()
     if not WAREHOUSE_ID:
         raise RuntimeError("DATABRICKS_WAREHOUSE_ID environment variable is not set.")
-    ws.statement_execution.execute_statement(
+    ws = get_workspace_client()
+    resp = ws.statement_execution.execute_statement(
         warehouse_id=WAREHOUSE_ID,
         statement=query,
         wait_timeout="30s",
     )
+    if resp.status and resp.status.error:
+        raise RuntimeError(f"SQL error: {resp.status.error.message}")
 
 
 # ---------------------------------------------------------------------------
@@ -153,8 +162,9 @@ def execute_statement(query: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def load_full_table() -> pd.DataFrame:
+def load_full_table():
     """Fetch the entire mappings table and cache it in session state."""
+    _log(f"load_full_table: querying {MAPPINGS_TABLE}")
     rows = execute_query(
         f"""
         SELECT
@@ -169,25 +179,26 @@ def load_full_table() -> pd.DataFrame:
             approval_status
         FROM {MAPPINGS_TABLE}
         ORDER BY confidence_score DESC, source_system, platform_header
-    """
+        """
     )
     df = pd.DataFrame(rows, columns=DISPLAY_COLUMNS)
     df["confidence_score"] = (
         pd.to_numeric(df["confidence_score"], errors="coerce").fillna(0).astype(int)
     )
+    _log(f"load_full_table: loaded {len(df)} rows")
     return df
 
 
-def get_mappings_df() -> pd.DataFrame:
+def get_mappings_df():
     """Return the in-memory mappings DataFrame, loading on first access."""
     if "mappings_df" not in st.session_state:
         st.session_state["mappings_df"] = load_full_table()
     return st.session_state["mappings_df"]
 
 
-def apply_local_edits(df: pd.DataFrame) -> pd.DataFrame:
+def apply_local_edits(df):
     """Overlay any pending session edits onto the cached DataFrame."""
-    edits: dict[str, dict] = st.session_state.get("pending_edits", {})
+    edits = st.session_state.get("pending_edits", {})
     if not edits:
         return df
     df = df.copy()
@@ -203,14 +214,12 @@ def apply_local_edits(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def init_session_state() -> None:
-    """Ensure all session keys exist."""
+def init_session_state():
     if "pending_edits" not in st.session_state:
         st.session_state["pending_edits"] = {}
 
 
-def stage_edits(mapping_ids: list[str], new_status: str, user: str) -> int:
-    """Record approve/reject decisions in session state (not yet committed)."""
+def stage_edits(mapping_ids, new_status, user):
     now = datetime.now(timezone.utc).isoformat()
     for mid in mapping_ids:
         st.session_state["pending_edits"][mid] = {
@@ -222,8 +231,7 @@ def stage_edits(mapping_ids: list[str], new_status: str, user: str) -> int:
     return len(mapping_ids)
 
 
-def discard_edits() -> None:
-    """Clear all pending edits."""
+def discard_edits():
     st.session_state["pending_edits"] = {}
 
 
@@ -232,8 +240,7 @@ def discard_edits() -> None:
 # ---------------------------------------------------------------------------
 
 
-def ensure_approvals_table() -> None:
-    """Create the approvals table if it does not exist."""
+def ensure_approvals_table():
     execute_statement(
         f"""
         CREATE TABLE IF NOT EXISTS {APPROVALS_TABLE} (
@@ -243,19 +250,17 @@ def ensure_approvals_table() -> None:
             decided_at       TIMESTAMP NOT NULL,
             committed_at     TIMESTAMP NOT NULL
         )
-    """
+        """
     )
 
 
-def commit_edits() -> int:
-    """Write all pending edits to the approvals table and clear session."""
-    edits: dict[str, dict] = st.session_state.get("pending_edits", {})
+def commit_edits():
+    edits = st.session_state.get("pending_edits", {})
     if not edits:
         return 0
 
     ensure_approvals_table()
 
-    # Build a single INSERT with multiple value rows
     value_rows = []
     for edit in edits.values():
         mid = edit["mapping_id"].replace("'", "''")
@@ -273,13 +278,11 @@ def commit_edits() -> int:
             (mapping_id, new_status, decided_by, decided_at, committed_at)
         VALUES
             {values_sql}
-    """
+        """
     )
 
     count = len(edits)
     discard_edits()
-
-    # Refresh the cached DataFrame so the UI reflects the commit
     st.session_state["mappings_df"] = load_full_table()
     return count
 
@@ -289,17 +292,21 @@ def commit_edits() -> int:
 # ---------------------------------------------------------------------------
 
 init_session_state()
-current_user = get_current_user()
-pending_edits: dict = st.session_state["pending_edits"]
+
+try:
+    current_user = get_current_user()
+except Exception:
+    current_user = "unknown"
+
+pending_edits = st.session_state["pending_edits"]
 
 st.title("Column Mapping Review")
 st.caption(f"Table: `{MAPPINGS_TABLE}`  |  Warehouse: `{WAREHOUSE_ID}`")
 
-# -- sidebar: user identity, commit bar, filters ---------------------------
+# -- sidebar ---------------------------------------------------------------
 st.sidebar.markdown(f"**Signed in as:** `{current_user}`")
 st.sidebar.divider()
 
-# Pending-edits indicator + commit / discard
 if pending_edits:
     st.sidebar.warning(f"{len(pending_edits)} uncommitted edit(s)")
     sb_c1, sb_c2 = st.sidebar.columns(2)
@@ -315,24 +322,30 @@ if pending_edits:
             st.rerun()
     st.sidebar.divider()
 
-# Reload button
 if st.sidebar.button("Reload data"):
     st.session_state.pop("mappings_df", None)
     st.rerun()
 
 st.sidebar.header("Filters")
 
-# -- load data (one SQL call, then filter in memory) ------------------------
+# -- load data --------------------------------------------------------------
 try:
     raw_df = get_mappings_df()
 except Exception as exc:
+    _tb = traceback.format_exc()
+    _log(f"data load failed: {exc}\n{_tb}")
     st.error(f"Failed to load data: {exc}")
+    with st.expander("Debug info"):
+        st.code(_tb)
+        st.write({
+            "WAREHOUSE_ID": WAREHOUSE_ID or "(not set)",
+            "MAPPINGS_TABLE": MAPPINGS_TABLE,
+            "DATABRICKS_HOST": os.getenv("DATABRICKS_HOST", "(not set)"),
+        })
     st.stop()
 
-# Apply any pending session edits so the user sees their changes immediately
 display_df = apply_local_edits(raw_df)
 
-# Build filter options from the in-memory data
 all_statuses = ["All"] + sorted(
     display_df["approval_status"].dropna().unique().tolist()
 )
@@ -344,7 +357,6 @@ source_filter = st.sidebar.selectbox("Source system", all_sources, index=0)
 domain_filter = st.sidebar.selectbox("Domain", all_domains, index=0)
 min_confidence = st.sidebar.slider("Min confidence", 0, 100, 0)
 
-# Apply filters in memory
 filtered_df = display_df.copy()
 if status_filter != "All":
     filtered_df = filtered_df[filtered_df["approval_status"] == status_filter]
@@ -370,12 +382,11 @@ if filtered_df.empty:
     st.stop()
 
 # -- data table with row selection ------------------------------------------
-# Highlight rows that have pending edits
 styled_df = filtered_df.reset_index(drop=True)
 
 event = st.dataframe(
     styled_df,
-    width="stretch",
+    use_container_width=True,
     hide_index=True,
     on_select="rerun",
     selection_mode="multi-row",
@@ -384,7 +395,7 @@ event = st.dataframe(
 selected_indices = event.selection.rows if event.selection else []
 selected_ids = [styled_df.iloc[i]["mapping_id"] for i in selected_indices]
 
-# -- approve / reject / commit controls ------------------------------------
+# -- actions ----------------------------------------------------------------
 st.subheader("Actions")
 
 if not selected_ids:
@@ -429,3 +440,5 @@ if pending_edits:
     st.subheader("Pending edits (uncommitted)")
     edits_df = pd.DataFrame(pending_edits.values())
     st.dataframe(edits_df, use_container_width=True, hide_index=True)
+
+_log("render complete")
