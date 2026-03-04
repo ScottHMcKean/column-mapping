@@ -13,15 +13,15 @@ def _deep_get(dct: Dict[str, Any], keys: list[str], default: Any = None) -> Any:
     return cur
 
 
-def _read_workspace_file(dbutils, file_path: str) -> str:
-    # For `file:/Workspace/...` paths, `dbutils.fs.head` works.
-    return dbutils.fs.head(file_path, 1024 * 1024)
+def _read_workspace_file(file_path: str) -> str:
+    with open(file_path, "r") as f:
+        return f.read()
 
 
 def load_repo_config(dbutils, repo_root_ws: str) -> Dict[str, Any]:
     """Load `config.yaml` from the repo root in the Databricks workspace."""
-    config_path = f"file:{repo_root_ws}/config.yaml"
-    raw = _read_workspace_file(dbutils, config_path)
+    config_path = f"{repo_root_ws}/config.yaml"
+    raw = _read_workspace_file(config_path)
     try:
         import yaml  # type: ignore
     except Exception as e:  # pragma: no cover
@@ -39,6 +39,7 @@ class EffectiveConfig:
 
     rules_table: str
     mappings_table: str
+    canonical_columns_table: str
 
     vs_endpoint_name: str
     vs_index_full_name: str
@@ -60,6 +61,7 @@ def compute_effective_config(
     table_prefix: Optional[str] = None,
     rules_table: Optional[str] = None,
     mappings_table: Optional[str] = None,
+    canonical_columns_table: Optional[str] = None,
     vs_endpoint_name: Optional[str] = None,
     vs_index_name_or_full: Optional[str] = None,
     embedding_model_endpoint: Optional[str] = None,
@@ -82,12 +84,18 @@ def compute_effective_config(
     default_mappings_name = _deep_get(
         config, ["tables", "mappings_table_name"], "governance_standardization_mappings"
     )
+    default_canonical_name = _deep_get(
+        config, ["tables", "canonical_columns_table_name"], "canonical_columns"
+    )
     cfg_rules_table = (
         rules_table or ""
     ).strip() or f"{cfg_catalog}.{cfg_schema}.{default_rules_name}"
     cfg_mappings_table = (
         mappings_table or ""
     ).strip() or f"{cfg_catalog}.{cfg_schema}.{default_mappings_name}"
+    cfg_canonical_columns_table = (
+        canonical_columns_table or ""
+    ).strip() or f"{cfg_catalog}.{cfg_schema}.{default_canonical_name}"
 
     cfg_vs_endpoint_name = (vs_endpoint_name or "").strip() or _deep_get(
         config, ["vector_search", "endpoint_name"], ""
@@ -140,6 +148,7 @@ def compute_effective_config(
         table_prefix=cfg_prefix,
         rules_table=cfg_rules_table,
         mappings_table=cfg_mappings_table,
+        canonical_columns_table=cfg_canonical_columns_table,
         vs_endpoint_name=cfg_vs_endpoint_name,
         vs_index_full_name=cfg_vs_index_full_name,
         embedding_model_endpoint=cfg_embedding_model_endpoint,

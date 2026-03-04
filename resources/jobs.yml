@@ -18,7 +18,7 @@ resources:
       environments:
         - environment_key: default
           spec:
-            client: "1"
+            client: "4"
 
     column_mapping_run_agentic:
       name: column-mapping-run-agentic
@@ -39,4 +39,4 @@ resources:
       environments:
         - environment_key: default
           spec:
-            client: "1"
+            client: "4"

@@ -2,10 +2,12 @@ databricks:
   catalog: shm
   schema: columnmapping
   table_prefix: silver
+  warehouse_id: 148ccb90800933a1
 
 tables:
   rules_table_name: standardization_rules
   mappings_table_name: standardization_mappings
+  canonical_columns_table_name: canonical_columns
 
 vector_search:
   endpoint_name: dbdemos_vs_endpoint

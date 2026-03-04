@@ -147,20 +147,32 @@ def standardize_column_agentic(
         }
 
 
+METADATA_TABLES = {
+    "standardization_mappings",
+    "standardization_rules",
+    "canonical_columns",
+    "column_approvals",
+}
+
 def discover_managed_tables(
     *, spark: "SparkSession", catalog: str, schema: str, table_prefix: str
 ) -> List[str]:
+    prefix_filter = f"AND table_name LIKE '{table_prefix}%'" if table_prefix else ""
     discovery_query = f"""
         SELECT table_name
         FROM {catalog}.information_schema.tables
         WHERE table_catalog = '{catalog}'
           AND table_schema = '{schema}'
-          AND table_name LIKE '{table_prefix}%'
+          {prefix_filter}
           AND table_type IN ('MANAGED', 'EXTERNAL')
         ORDER BY table_name
     """
     rows = spark.sql(discovery_query).collect()
-    return [r.table_name for r in rows]
+    return [
+        r.table_name for r in rows
+        if r.table_name not in METADATA_TABLES
+        and not r.table_name.endswith("_index")
+    ]
 
 
 def source_system_from_table(*, table_name: str, table_prefix: str) -> str:

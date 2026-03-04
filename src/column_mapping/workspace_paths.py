@@ -9,11 +9,10 @@ class RepoPaths:
 
     @property
     def repo_root_file(self) -> str:
-        # Workspace files are readable via file:/
-        return f"file:{self.repo_root_ws}"
+        return self.repo_root_ws
 
     def data_file(self, relative_name: str) -> str:
-        return f"{self.repo_root_file}/data/{relative_name}"
+        return f"{self.repo_root_ws}/data/{relative_name}"
 
 
 def get_repo_paths(dbutils) -> RepoPaths:

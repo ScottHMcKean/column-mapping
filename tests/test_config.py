@@ -25,6 +25,7 @@ def test_compute_effective_config_defaults_and_fqns() -> None:
     assert cfg.table_prefix == "silver"
     assert cfg.rules_table == "c1.s1.rules_tbl"
     assert cfg.mappings_table == "c1.s1.mappings_tbl"
+    assert cfg.canonical_columns_table == "c1.s1.canonical_columns"
     assert cfg.vs_endpoint_name == "my_endpoint"
     assert cfg.vs_index_full_name == "c1.s1.my_index"
     assert cfg.llm_endpoint == "llm-x"

@@ -1,0 +1,23 @@
+canonical_name,business_definition,domain,expected_data_type,created_by
+account_id,Unique identifier for a customer account,Reference,string,system
+account_mgr,Account manager responsible for the customer relationship,Organizational,string,system
+account_status,Current status of the customer account,Operational,string,system
+created_date,Date when the record was originally created,Operational,date,system
+created_timestamp,Timestamp when the record was originally created,Operational,timestamp,system
+customer_email,Primary email address for the customer,Customer Data,string,system
+customer_name,Full name of the customer,Customer Data,string,system
+customer_phone_num,Primary phone number for the customer,Customer Data,string,system
+customer_segment,Market segment classification for the customer,Customer Data,string,system
+customer_tier,Service tier or loyalty level of the customer,Customer Data,string,system
+discount_pct,Discount percentage applied to a transaction,Financial,decimal,system
+last_modified_date,Date when the record was last modified,Operational,timestamp,system
+last_modified_timestamp,Timestamp when the record was last modified,Operational,timestamp,system
+order_amt,Monetary amount of an order,Financial,decimal,system
+order_id,Unique identifier for an order,Reference,string,system
+order_status,Current fulfillment status of an order,Operational,string,system
+payment_type,Payment method used for a transaction,Reference,string,system
+shipped_date,Date when the order was shipped,Operational,date,system
+shipping_addr,Shipping destination address,Location,string,system
+signup_date,Date when the customer first registered,Operational,date,system
+tax_amt,Tax amount applied to a transaction,Financial,decimal,system
+total_revenue,Total revenue generated from a customer or account,Financial,decimal,system
