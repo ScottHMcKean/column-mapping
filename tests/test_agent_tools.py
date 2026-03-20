@@ -26,12 +26,12 @@ CANONICAL_FIELDS = [
 ]
 
 SOURCE_COLUMNS = [
-    {"column_id": "sc_001", "platform_id": "aexeo4", "column_name": "FND_ID",
-     "source_table": "citco_mapping.aexeo4.positions", "data_type": "STRING"},
-    {"column_id": "sc_002", "platform_id": "aexeo4", "column_name": "NAV_AMT",
-     "source_table": "citco_mapping.aexeo4.positions", "data_type": "DECIMAL"},
-    {"column_id": "sc_003", "platform_id": "aexeo_s", "column_name": "fund_id",
-     "source_table": "citco_mapping.aexeo_s.investors", "data_type": "STRING"},
+    {"column_id": "sc_001", "platform_id": "alpha_ledger", "column_name": "FND_ID",
+     "source_table": "column_mapping.alpha_ledger.positions", "data_type": "STRING"},
+    {"column_id": "sc_002", "platform_id": "alpha_ledger", "column_name": "NAV_AMT",
+     "source_table": "column_mapping.alpha_ledger.positions", "data_type": "DECIMAL"},
+    {"column_id": "sc_003", "platform_id": "summit_books", "column_name": "fund_id",
+     "source_table": "column_mapping.summit_books.investors", "data_type": "STRING"},
 ]
 
 APPROVED_MAPPINGS = [
@@ -130,12 +130,12 @@ class TestGetCrossPlatformContext:
         ctx = get_cross_platform_context("cf_001", APPROVED_MAPPINGS, SOURCE_COLUMNS)
         assert len(ctx) == 2
         platforms = {c["platform_id"] for c in ctx}
-        assert platforms == {"aexeo4", "aexeo_s"}
+        assert platforms == {"alpha_ledger", "summit_books"}
 
     def test_single_platform_mapping(self):
         ctx = get_cross_platform_context("cf_005", APPROVED_MAPPINGS, SOURCE_COLUMNS)
         assert len(ctx) == 1
-        assert ctx[0]["platform_id"] == "aexeo4"
+        assert ctx[0]["platform_id"] == "alpha_ledger"
         assert ctx[0]["column_name"] == "NAV_AMT"
 
     def test_unknown_canonical(self):

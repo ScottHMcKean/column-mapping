@@ -1,4 +1,4 @@
-# Citco Column Mapper -- Design Document
+# Column Mapper -- Design Document
 
 **Date:** 2026-03-03 (revised 2026-03-17)
 
@@ -6,7 +6,7 @@
 
 ## The Problem
 
-Every financial platform (Aexeo, Investran, Yardi, AXI, Waterfall) has its own naming conventions for the same data concepts. `Acct-ID`, `AccountID`, `account_id`, `Account ID` -- they all mean the same thing. Multiply this by hundreds of columns across dozens of platforms during a migration and you have a governance problem that no spreadsheet will solve.
+Every financial platform has its own naming conventions for the same data concepts. `Acct-ID`, `AccountID`, `account_id`, `Account ID` -- they all mean the same thing. Multiply this by hundreds of columns across dozens of platforms during a migration and you have a governance problem that no spreadsheet will solve.
 
 This project takes a hub-and-spoke approach: **discover source columns via batch, propose canonical matches with an AI agent, and let stewards review and approve in a simple two-tab app.** Every machine-generated output is a proposal -- never a fact.
 
@@ -166,7 +166,7 @@ All configuration lives in `config.yaml`. No hardcoded table names, platform def
 |---|---|---|
 | databricks | catalog, schema, warehouse_id, profile | Unity Catalog location and compute |
 | tables | canonical_fields, source_columns, etc. | Table name overrides |
-| platforms | id, name, source_catalog, source_schema | Source systems to scan (50+) |
+| platforms | id, name, source_catalog, source_schema | Source systems to scan |
 | gold | catalog, schema | Where gold views are created |
 | llm | endpoint | Model serving endpoint for ai_query |
 

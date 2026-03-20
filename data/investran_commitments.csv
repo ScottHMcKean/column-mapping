@@ -1,9 +1,0 @@
-FundCode,FundName,LPName,LPCommitment,DrawdownAmt,DistributionAmt,Unfunded,CarryPct,VintageYr,InvType,FundCurrency
-PE-3001,Citco Buyout Partners VII,KKR Capital Markets,500000000.00,375000000.00,187500000.00,125000000.00,20.00,2020,GP Commitment,USD
-PE-3001,Citco Buyout Partners VII,Blackstone Strategic Partners,300000000.00,225000000.00,112500000.00,75000000.00,20.00,2020,LP Commitment,USD
-PE-3002,Citco Venture Growth IV,Sequoia Capital Fund,150000000.00,90000000.00,22500000.00,60000000.00,25.00,2022,LP Commitment,USD
-PE-3002,Citco Venture Growth IV,Andreessen Horowitz,200000000.00,120000000.00,30000000.00,80000000.00,25.00,2022,LP Commitment,USD
-PE-3003,Citco Secondary Opps III,Pantheon Ventures,250000000.00,200000000.00,100000000.00,50000000.00,15.00,2019,LP Commitment,USD
-PE-3003,Citco Secondary Opps III,Coller Capital,175000000.00,140000000.00,70000000.00,35000000.00,15.00,2019,LP Commitment,USD
-PE-3004,Citco Mezzanine Fund II,Ares Management,100000000.00,85000000.00,51000000.00,15000000.00,18.00,2021,LP Commitment,USD
-PE-3004,Citco Mezzanine Fund II,Apollo Global Management,180000000.00,153000000.00,91800000.00,27000000.00,18.00,2021,LP Commitment,USD

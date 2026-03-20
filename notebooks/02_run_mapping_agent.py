@@ -43,7 +43,7 @@ with open(cfg_path.replace("/Workspace", "")) as f:
 db = cfg.get("databricks", {})
 tables = cfg.get("tables", {})
 platforms = cfg.get("platforms", [])
-CATALOG = db.get("catalog", "citco_mapping")
+CATALOG = db.get("catalog", "column_mapping")
 SCHEMA = db.get("schema", "mapping")
 LLM_ENDPOINT = cfg.get("llm", {}).get("endpoint", "databricks-claude-sonnet-4-5")
 

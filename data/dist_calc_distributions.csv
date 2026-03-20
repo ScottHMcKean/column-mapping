@@ -1,0 +1,9 @@
+WF_Calc_ID,Fund_Ref,Fund_Desc,Dist_Dt,Dist_Type,Gross_Dist_Amt,Mgmt_Fee_Amt,Perf_Fee_Amt,Net_Dist_Amt,LP_Acct_ID,LP_Name,Pref_Return_Pct,Catch_Up_Pct,Carry_Split_Pct,Tier,Vintage,Reporting_Qtr
+WF-6001,PE-3001,Acme Buyout Partners VII,2025-12-20,Capital Return,50000000.00,625000.00,9875000.00,39500000.00,LP-6601,KKR Capital Markets,8.00,100.00,80.00,Above Preferred,2020,Q4 2025
+WF-6002,PE-3001,Acme Buyout Partners VII,2025-12-20,Profit Distribution,25000000.00,312500.00,4937500.00,19750000.00,LP-6602,Blackstone Strategic Partners,8.00,100.00,80.00,Catch-Up,2020,Q4 2025
+WF-6003,PE-3002,Acme Venture Growth IV,2025-12-22,Capital Return,15000000.00,225000.00,3693750.00,11081250.00,LP-6603,Sequoia Capital Fund,8.00,100.00,75.00,Above Preferred,2022,Q4 2025
+WF-6004,PE-3002,Acme Venture Growth IV,2025-12-22,Profit Distribution,8000000.00,120000.00,1970000.00,5910000.00,LP-6604,Andreessen Horowitz,8.00,100.00,75.00,Below Preferred,2022,Q4 2025
+WF-6005,PE-3003,Acme Secondary Opps III,2025-12-18,Capital Return,30000000.00,300000.00,4455000.00,25245000.00,LP-6605,Pantheon Ventures,7.00,100.00,85.00,Above Preferred,2019,Q4 2025
+WF-6006,PE-3003,Acme Secondary Opps III,2025-12-18,Profit Distribution,20000000.00,200000.00,2970000.00,16830000.00,LP-6606,Coller Capital,7.00,100.00,85.00,Catch-Up,2019,Q4 2025
+WF-6007,PE-3004,Acme Mezzanine Fund II,2025-12-15,Interest Payment,5000000.00,50000.00,891000.00,4059000.00,LP-6607,Ares Management,6.50,100.00,82.00,Below Preferred,2021,Q4 2025
+WF-6008,PE-3004,Acme Mezzanine Fund II,2025-12-15,Capital Return,12000000.00,120000.00,2138400.00,9741600.00,LP-6608,Apollo Global Management,6.50,100.00,82.00,Above Preferred,2021,Q4 2025

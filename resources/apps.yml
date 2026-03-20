@@ -3,7 +3,7 @@
 #
 # resources:
 #   apps:
-#     citco_mapping:
-#       name: citco-column-mapper
-#       description: "Citco Column Mapper -- standardize and match column headers across platforms"
+#     column_mapping:
+#       name: column-mapper
+#       description: "Column Mapper -- standardize and match column headers across platforms"
 #       source_code_path: ../app

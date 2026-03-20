@@ -3,64 +3,64 @@
   "resources": [
     {
       "type": "catalog",
-      "name": "citco_mapping",
-      "id": "citco_mapping",
+      "name": "column_mapping",
+      "id": "column_mapping",
       "created_at": "2026-03-19T14:39:41.796950+00:00",
       "updated_at": "2026-03-19T14:39:41.796950+00:00"
     },
     {
       "type": "schema",
-      "name": "citco_mapping.mapping",
-      "id": "citco_mapping.mapping",
+      "name": "column_mapping.mapping",
+      "id": "column_mapping.mapping",
       "created_at": "2026-03-19T14:39:52.476556+00:00",
       "updated_at": "2026-03-19T14:39:52.476556+00:00"
     },
     {
       "type": "schema",
-      "name": "citco_mapping.gold",
-      "id": "citco_mapping.gold",
+      "name": "column_mapping.gold",
+      "id": "column_mapping.gold",
       "created_at": "2026-03-19T14:39:59.749752+00:00",
       "updated_at": "2026-03-19T14:39:59.749752+00:00"
     },
     {
       "type": "schema",
-      "name": "citco_mapping.aexeo4",
-      "id": "citco_mapping.aexeo4",
+      "name": "column_mapping.alpha_ledger",
+      "id": "column_mapping.alpha_ledger",
       "created_at": "2026-03-19T14:40:07.048594+00:00",
       "updated_at": "2026-03-19T14:40:07.048594+00:00"
     },
     {
       "type": "schema",
-      "name": "citco_mapping.aexeo_s",
-      "id": "citco_mapping.aexeo_s",
+      "name": "column_mapping.summit_books",
+      "id": "column_mapping.summit_books",
       "created_at": "2026-03-19T14:40:14.251040+00:00",
       "updated_at": "2026-03-19T14:40:14.251040+00:00"
     },
     {
       "type": "schema",
-      "name": "citco_mapping.investran",
-      "id": "citco_mapping.investran",
+      "name": "column_mapping.capital_track",
+      "id": "column_mapping.capital_track",
       "created_at": "2026-03-19T14:40:21.457629+00:00",
       "updated_at": "2026-03-19T14:40:21.457629+00:00"
     },
     {
       "type": "schema",
-      "name": "citco_mapping.axi",
-      "id": "citco_mapping.axi",
+      "name": "column_mapping.trade_core",
+      "id": "column_mapping.trade_core",
       "created_at": "2026-03-19T14:40:28.842768+00:00",
       "updated_at": "2026-03-19T14:40:28.842768+00:00"
     },
     {
       "type": "schema",
-      "name": "citco_mapping.yardi",
-      "id": "citco_mapping.yardi",
+      "name": "column_mapping.realty_ops",
+      "id": "column_mapping.realty_ops",
       "created_at": "2026-03-19T14:40:36.095506+00:00",
       "updated_at": "2026-03-19T14:40:36.095506+00:00"
     },
     {
       "type": "schema",
-      "name": "citco_mapping.waterfall",
-      "id": "citco_mapping.waterfall",
+      "name": "column_mapping.dist_calc",
+      "id": "column_mapping.dist_calc",
       "created_at": "2026-03-19T14:40:43.310188+00:00",
       "updated_at": "2026-03-19T14:40:43.310188+00:00"
     }

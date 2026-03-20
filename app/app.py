@@ -1,6 +1,6 @@
 """
-Citco Column Mapper
-===================
+Column Mapper
+=============
 Two-page Streamlit app for cross-platform column standardization.
 
   Data Mapping -- Discover source columns, run the AI mapping agent, review proposals
@@ -22,7 +22,7 @@ from databricks.sdk import WorkspaceClient
 
 
 def _log(msg):
-    print(f"[citco] {msg}", file=sys.stderr, flush=True)
+    print(f"[column-mapper] {msg}", file=sys.stderr, flush=True)
 
 
 # =====================================================================
@@ -30,7 +30,7 @@ def _log(msg):
 # =====================================================================
 
 st.set_page_config(
-    page_title="Citco Column Mapper",
+    page_title="Column Mapper",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -135,7 +135,7 @@ TABLES = CFG.get("tables", {})
 PLATFORMS = CFG.get("platforms", [])
 GOLD = CFG.get("gold", {})
 
-CATALOG = DB.get("catalog", "citco_mapping")
+CATALOG = DB.get("catalog", "column_mapping")
 SCHEMA = DB.get("schema", "mapping")
 WAREHOUSE_ID = os.getenv("DATABRICKS_WAREHOUSE_ID") or DB.get("warehouse_id", "")
 LLM_ENDPOINT = CFG.get("llm", {}).get("endpoint", "databricks-claude-sonnet-4-5")
@@ -618,13 +618,9 @@ try:
 except Exception:
     current_user = "unknown"
 
-logo_path = os.path.join(os.path.dirname(__file__), "Citco.png")
-if os.path.isfile(logo_path):
-    st.sidebar.image(logo_path, width="stretch")
-
 st.sidebar.markdown(
     '<div style="text-align:center; padding:0.5rem 0;">'
-    '<span style="font-size:0.95em; color:#555;">Column Mapper</span></div>',
+    '<span style="font-size:1.1em; font-weight:600; color:#1B2A4A;">Column Mapper</span></div>',
     unsafe_allow_html=True,
 )
 st.sidebar.divider()

@@ -1,8 +1,8 @@
-# Citco Column Mapper
+# Column Mapper
 
 Cross-platform column standardization for fund administration data, backed by Delta tables and serverless SQL.
 
-Six source platforms (Aexeo 4, Aexeo S, Investran, AXI, Yardi, Waterfall) each use different column naming conventions. This project discovers every column, uses an AI agent to propose mappings to a canonical schema, and provides a Streamlit app for data stewards to review, approve, and generate gold views.
+Six source platforms (Alpha Ledger, Summit Books, Capital Track, Trade Core, Realty Ops, Dist Calc) each use different column naming conventions. This project discovers every column, uses an AI agent to propose mappings to a canonical schema, and provides a Streamlit app for data stewards to review, approve, and generate gold views.
 
 ## Data Flow
 
@@ -48,12 +48,12 @@ The same setup notebook uploads six CSV files into separate Unity Catalog schema
 
 | Platform | Schema | Table | Columns | Description |
 |---|---|---|---|---|
-| Aexeo 4 | `aexeo4` | `positions` | FND_ID, FUND_NM, NAV_AMT, ... | Fund admin (legacy), UPPER abbreviations |
-| Aexeo S | `aexeo_s` | `investors` | fund_id, fund_name, nav_total, ... | Fund admin (next-gen), lowercase |
-| AXI | `axi` | `transactions` | TXN_ID, TXN_DATE, TXN_AMT, ... | Investment operations, UPPER abbreviations |
-| Investran | `investran` | `commitments` | FundCode, FundName, LPCommitment, ... | PE fund admin, PascalCase |
-| Yardi | `yardi` | `properties` | Property_Fund_ID, Fund Name, ... | Real estate, mixed case with spaces |
-| Waterfall | `waterfall` | `distributions` | WF_Calc_ID, Fund_Ref, Dist_Dt, ... | Distribution waterfalls, underscore prefixes |
+| Alpha Ledger | `alpha_ledger` | `positions` | FND_ID, FUND_NM, NAV_AMT, ... | Fund admin (legacy), UPPER abbreviations |
+| Summit Books | `summit_books` | `investors` | fund_id, fund_name, nav_total, ... | Fund admin (next-gen), lowercase |
+| Trade Core | `trade_core` | `transactions` | TXN_ID, TXN_DATE, TXN_AMT, ... | Investment operations, UPPER abbreviations |
+| Capital Track | `capital_track` | `commitments` | FundCode, FundName, LPCommitment, ... | PE fund admin, PascalCase |
+| Realty Ops | `realty_ops` | `properties` | Property_Fund_ID, Fund Name, ... | Real estate, mixed case with spaces |
+| Dist Calc | `dist_calc` | `distributions` | WF_Calc_ID, Fund_Ref, Dist_Dt, ... | Distribution waterfalls, underscore prefixes |
 
 ### Step 3 -- Discover source columns
 
@@ -64,7 +64,7 @@ The same setup notebook uploads six CSV files into separate Unity Catalog schema
 For each unmapped column, the agent runs a fixed pipeline:
 
 1. **Deterministic standardization** -- lowercase, expand abbreviations (`FND_ID` -> `fund_id`), remove special characters, enforce snake_case.
-2. **BM25 search: approved mappings** -- find similar columns that have already been mapped on other platforms. This is how the agent learns cross-platform patterns (e.g. if `FND_ID` on Aexeo 4 already maps to `fund_identifier`, it will suggest the same for `FundCode` on Investran).
+2. **BM25 search: approved mappings** -- find similar columns that have already been mapped on other platforms.
 3. **BM25 search: canonical fields** -- find candidate canonical fields by name, definition, and domain.
 4. **Cross-platform context** -- for the top candidates, gather all platforms that already map to them.
 5. **LLM synthesis** -- send all context to an LLM (`ai_query`) to produce a recommendation with confidence score (0-100) and rationale.
@@ -88,13 +88,13 @@ Every action is recorded in the `audit_log` table.
 From the Master File tab, stewards can generate SQL views in the gold schema that rename source columns to their canonical names:
 
 ```sql
-CREATE OR REPLACE VIEW citco_mapping.gold.aexeo4__positions AS
+CREATE OR REPLACE VIEW column_mapping.gold.alpha_ledger__positions AS
 SELECT
     `FND_ID` AS `fund_identifier`,
     `FUND_NM` AS `fund_name`,
     `NAV_AMT` AS `net_asset_value`,
     ...
-FROM citco_mapping.aexeo4.positions
+FROM column_mapping.alpha_ledger.positions
 ```
 
 ## Delta Tables

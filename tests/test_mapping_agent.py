@@ -19,8 +19,8 @@ CANONICAL_FIELDS = [
 ]
 
 SOURCE_COLUMNS = [
-    {"column_id": "sc_001", "platform_id": "aexeo4", "column_name": "FND_ID",
-     "source_table": "citco_mapping.aexeo4.positions", "data_type": "STRING"},
+    {"column_id": "sc_001", "platform_id": "alpha_ledger", "column_name": "FND_ID",
+     "source_table": "column_mapping.alpha_ledger.positions", "data_type": "STRING"},
 ]
 
 APPROVED_MAPPINGS = [
@@ -57,7 +57,7 @@ class TestBuildAgentPrompt:
     def test_contains_column_info(self):
         prompt = build_agent_prompt(
             column_name="FND_ID",
-            platform_name="Aexeo 4",
+            platform_name="Alpha Ledger",
             rule_standardized="fund_id",
             similar_mappings=[],
             canonical_candidates=[],
@@ -65,19 +65,19 @@ class TestBuildAgentPrompt:
             abbreviations={},
         )
         assert "FND_ID" in prompt
-        assert "Aexeo 4" in prompt
+        assert "Alpha Ledger" in prompt
         assert "fund_id" in prompt
 
     def test_contains_similar_mappings(self):
         similar = [{
             "column_name": "FUND_CODE",
-            "platform_id": "investran",
+            "platform_id": "capital_track",
             "canonical_name": "fund_identifier",
             "_bm25_score": 3.5,
         }]
         prompt = build_agent_prompt(
             column_name="FND_ID",
-            platform_name="Aexeo 4",
+            platform_name="Alpha Ledger",
             rule_standardized="fund_id",
             similar_mappings=similar,
             canonical_candidates=[],
@@ -86,12 +86,12 @@ class TestBuildAgentPrompt:
         )
         assert "SIMILAR APPROVED MAPPINGS" in prompt
         assert "FUND_CODE" in prompt
-        assert "investran" in prompt
+        assert "capital_track" in prompt
 
     def test_contains_canonical_candidates(self):
         prompt = build_agent_prompt(
             column_name="FND_ID",
-            platform_name="Aexeo 4",
+            platform_name="Alpha Ledger",
             rule_standardized="fund_id",
             similar_mappings=[],
             canonical_candidates=CANONICAL_FIELDS,
@@ -105,13 +105,13 @@ class TestBuildAgentPrompt:
     def test_contains_cross_platform(self):
         cross_platform = {
             "fund_identifier": [
-                {"platform_id": "aexeo4", "column_name": "FND_ID"},
-                {"platform_id": "aexeo_s", "column_name": "fund_id"},
+                {"platform_id": "alpha_ledger", "column_name": "FND_ID"},
+                {"platform_id": "summit_books", "column_name": "fund_id"},
             ]
         }
         prompt = build_agent_prompt(
             column_name="FundCode",
-            platform_name="Investran",
+            platform_name="Capital Track",
             rule_standardized="fund_code",
             similar_mappings=[],
             canonical_candidates=[],
@@ -119,13 +119,13 @@ class TestBuildAgentPrompt:
             abbreviations={},
         )
         assert "CROSS-PLATFORM CONTEXT" in prompt
-        assert "aexeo4" in prompt
-        assert "aexeo_s" in prompt
+        assert "alpha_ledger" in prompt
+        assert "summit_books" in prompt
 
     def test_contains_abbreviation_rules(self):
         prompt = build_agent_prompt(
             column_name="FND_ID",
-            platform_name="Aexeo 4",
+            platform_name="Alpha Ledger",
             rule_standardized="fund_id",
             similar_mappings=[],
             canonical_candidates=[],
@@ -178,8 +178,8 @@ class TestRunMappingAgent:
 
         result = run_mapping_agent(
             column_name="FND_ID",
-            platform_id="aexeo4",
-            platform_name="Aexeo 4",
+            platform_id="alpha_ledger",
+            platform_name="Alpha Ledger",
             source_columns=SOURCE_COLUMNS,
             approved_mappings=APPROVED_MAPPINGS,
             canonical_fields=CANONICAL_FIELDS,
@@ -216,8 +216,8 @@ class TestRunMappingAgent:
 
         result = run_mapping_agent(
             column_name="FND_ID",
-            platform_id="investran",
-            platform_name="Investran",
+            platform_id="capital_track",
+            platform_name="Capital Track",
             source_columns=SOURCE_COLUMNS,
             approved_mappings=APPROVED_MAPPINGS,
             canonical_fields=CANONICAL_FIELDS,

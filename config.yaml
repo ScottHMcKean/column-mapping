@@ -1,5 +1,5 @@
 databricks:
-  catalog: citco_mapping
+  catalog: column_mapping
   schema: mapping
   warehouse_id: 148ccb90800933a1
   profile: DEFAULT
@@ -13,39 +13,39 @@ tables:
   standardization_rules: standardization_rules
 
 platforms:
-  - id: aexeo4
-    name: Aexeo 4
-    source_catalog: citco_mapping
-    source_schema: aexeo4
+  - id: alpha_ledger
+    name: Alpha Ledger
+    source_catalog: column_mapping
+    source_schema: alpha_ledger
     description: Fund Administration (legacy)
-  - id: aexeo_s
-    name: Aexeo S
-    source_catalog: citco_mapping
-    source_schema: aexeo_s
+  - id: summit_books
+    name: Summit Books
+    source_catalog: column_mapping
+    source_schema: summit_books
     description: Fund Administration (next-gen)
-  - id: investran
-    name: Investran
-    source_catalog: citco_mapping
-    source_schema: investran
+  - id: capital_track
+    name: Capital Track
+    source_catalog: column_mapping
+    source_schema: capital_track
     description: Private Equity Fund Administration
-  - id: axi
-    name: AXI
-    source_catalog: citco_mapping
-    source_schema: axi
+  - id: trade_core
+    name: Trade Core
+    source_catalog: column_mapping
+    source_schema: trade_core
     description: Investment Operations
-  - id: yardi
-    name: Yardi
-    source_catalog: citco_mapping
-    source_schema: yardi
+  - id: realty_ops
+    name: Realty Ops
+    source_catalog: column_mapping
+    source_schema: realty_ops
     description: Real Estate Fund Administration
-  - id: waterfall
-    name: Waterfall
-    source_catalog: citco_mapping
-    source_schema: waterfall
+  - id: dist_calc
+    name: Dist Calc
+    source_catalog: column_mapping
+    source_schema: dist_calc
     description: Distribution Waterfall Calculations
 
 gold:
-  catalog: citco_mapping
+  catalog: column_mapping
   schema: gold
 
 llm:

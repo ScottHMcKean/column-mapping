@@ -33,7 +33,7 @@ with open(cfg_path.replace("/Workspace", "")) as f:
 db = cfg.get("databricks", {})
 tables_cfg = cfg.get("tables", {})
 platforms = cfg.get("platforms", [])
-CATALOG = db.get("catalog", "citco_mapping")
+CATALOG = db.get("catalog", "column_mapping")
 SCHEMA = db.get("schema", "mapping")
 
 
@@ -165,12 +165,12 @@ print(f"  Loaded {rules_pdf.shape[0]} rules into {T_RULES}")
 # Step 4: Load platform CSVs into their respective schemas
 
 PLATFORM_FILES = {
-    "aexeo4": ("aexeo4_positions.csv", "positions"),
-    "aexeo_s": ("aexeo_s_investors.csv", "investors"),
-    "axi": ("axi_transactions.csv", "transactions"),
-    "investran": ("investran_commitments.csv", "commitments"),
-    "yardi": ("yardi_properties.csv", "properties"),
-    "waterfall": ("waterfall_distributions.csv", "distributions"),
+    "alpha_ledger": ("alpha_ledger_positions.csv", "positions"),
+    "summit_books": ("summit_books_investors.csv", "investors"),
+    "trade_core": ("trade_core_transactions.csv", "transactions"),
+    "capital_track": ("capital_track_commitments.csv", "commitments"),
+    "realty_ops": ("realty_ops_properties.csv", "properties"),
+    "dist_calc": ("dist_calc_distributions.csv", "distributions"),
 }
 
 for plat in platforms:
