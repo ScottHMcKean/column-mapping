@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "resources": [
+    {
+      "type": "catalog",
+      "name": "citco_mapping",
+      "id": "citco_mapping",
+      "created_at": "2026-03-19T14:39:41.796950+00:00",
+      "updated_at": "2026-03-19T14:39:41.796950+00:00"
+    },
+    {
+      "type": "schema",
+      "name": "citco_mapping.mapping",
+      "id": "citco_mapping.mapping",
+      "created_at": "2026-03-19T14:39:52.476556+00:00",
+      "updated_at": "2026-03-19T14:39:52.476556+00:00"
+    },
+    {
+      "type": "schema",
+      "name": "citco_mapping.gold",
+      "id": "citco_mapping.gold",
+      "created_at": "2026-03-19T14:39:59.749752+00:00",
+      "updated_at": "2026-03-19T14:39:59.749752+00:00"
+    },
+    {
+      "type": "schema",
+      "name": "citco_mapping.aexeo4",
+      "id": "citco_mapping.aexeo4",
+      "created_at": "2026-03-19T14:40:07.048594+00:00",
+      "updated_at": "2026-03-19T14:40:07.048594+00:00"
+    },
+    {
+      "type": "schema",
+      "name": "citco_mapping.aexeo_s",
+      "id": "citco_mapping.aexeo_s",
+      "created_at": "2026-03-19T14:40:14.251040+00:00",
+      "updated_at": "2026-03-19T14:40:14.251040+00:00"
+    },
+    {
+      "type": "schema",
+      "name": "citco_mapping.investran",
+      "id": "citco_mapping.investran",
+      "created_at": "2026-03-19T14:40:21.457629+00:00",
+      "updated_at": "2026-03-19T14:40:21.457629+00:00"
+    },
+    {
+      "type": "schema",
+      "name": "citco_mapping.axi",
+      "id": "citco_mapping.axi",
+      "created_at": "2026-03-19T14:40:28.842768+00:00",
+      "updated_at": "2026-03-19T14:40:28.842768+00:00"
+    },
+    {
+      "type": "schema",
+      "name": "citco_mapping.yardi",
+      "id": "citco_mapping.yardi",
+      "created_at": "2026-03-19T14:40:36.095506+00:00",
+      "updated_at": "2026-03-19T14:40:36.095506+00:00"
+    },
+    {
+      "type": "schema",
+      "name": "citco_mapping.waterfall",
+      "id": "citco_mapping.waterfall",
+      "created_at": "2026-03-19T14:40:43.310188+00:00",
+      "updated_at": "2026-03-19T14:40:43.310188+00:00"
+    }
+  ]
+}

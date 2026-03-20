@@ -4,23 +4,5 @@ bundle:
 include:
   - resources/*.yml
 
-variables:
-  catalog:
-    default: shm
-  schema:
-    default: columnmapping
-  table_prefix:
-    default: silver
-  vs_endpoint_name:
-    default: dbdemos_vs_endpoint
-  vs_index_name:
-    default: standardization_mappings_index
-  embedding_model_endpoint:
-    default: databricks-bge-large-en
-  llm_endpoint:
-    default: databricks-claude-sonnet-4-5
-  top_k:
-    default: 5
-
 workspace:
   root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

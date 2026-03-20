@@ -1,0 +1,8 @@
+Property_Fund_ID,Fund_Name,Property_Code,Property_Name,Asset_Type,Acquisition_Date,Purchase_Price,Current_Mkt_Value,Annual_Rental_Inc,Occupancy_Rate_Pct,Investor_ID,Investor_Full_Name,Capital_Committed,Capital_Drawn,Distributions_Paid,Mgmt_Fee_Pct,Report_Period
+RE-5001,Citco Real Estate Fund IV,PROP-101,One Manhattan West,Office,2021-06-15,450000000.00,520000000.00,28000000.00,94.5,LP-5501,CPPIB Real Estate,100000000.00,85000000.00,25500000.00,1.25,Q4 2025
+RE-5001,Citco Real Estate Fund IV,PROP-102,The Wharf DC,Mixed Use,2022-01-20,325000000.00,348000000.00,19500000.00,88.2,LP-5501,CPPIB Real Estate,100000000.00,85000000.00,25500000.00,1.25,Q4 2025
+RE-5001,Citco Real Estate Fund IV,PROP-103,Chicago Riverwalk Tower,Office,2020-09-10,275000000.00,261000000.00,16200000.00,82.7,LP-5502,Brookfield Asset Management,150000000.00,127500000.00,38250000.00,1.25,Q4 2025
+RE-5002,Citco Logistics REIT II,PROP-201,Atlanta Distribution Center,Industrial,2023-03-08,180000000.00,198000000.00,12600000.00,100.0,LP-5503,Prologis Partners,200000000.00,160000000.00,48000000.00,1.00,Q4 2025
+RE-5002,Citco Logistics REIT II,PROP-202,Dallas Fulfillment Hub,Industrial,2023-07-22,220000000.00,242000000.00,15400000.00,97.3,LP-5504,GLP Capital Partners,175000000.00,140000000.00,42000000.00,1.00,Q4 2025
+RE-5003,Citco Residential Income III,PROP-301,Brooklyn Heights Apts,Residential,2022-11-05,95000000.00,103000000.00,7200000.00,96.1,LP-5505,Starwood Capital Group,80000000.00,72000000.00,21600000.00,1.50,Q4 2025
+RE-5003,Citco Residential Income III,PROP-302,Miami Brickell Residences,Residential,2023-05-18,120000000.00,138000000.00,8400000.00,91.8,LP-5506,Greystar Real Estate,120000000.00,108000000.00,32400000.00,1.50,Q4 2025

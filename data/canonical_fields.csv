@@ -1,0 +1,31 @@
+canonical_id,canonical_name,data_type,business_definition,domain_category,is_locked,created_by
+cf_001,fund_identifier,STRING,Unique identifier for a fund entity,Fund,TRUE,system
+cf_002,fund_name,STRING,Legal name of the fund,Fund,TRUE,system
+cf_003,fund_currency,STRING,Base currency of the fund (ISO 4217),Fund,FALSE,system
+cf_004,fund_inception_date,DATE,Date the fund was launched,Fund,FALSE,system
+cf_005,net_asset_value,DECIMAL,Total net asset value of the fund,Valuation,TRUE,system
+cf_006,nav_per_share,DECIMAL,Net asset value per unit/share,Valuation,TRUE,system
+cf_007,valuation_date,DATE,Date of the valuation calculation,Valuation,TRUE,system
+cf_008,investor_identifier,STRING,Unique identifier for an investor,Investor,TRUE,system
+cf_009,investor_name,STRING,Full legal name of the investor,Investor,TRUE,system
+cf_010,investor_type,STRING,"Classification of investor (institutional, retail, etc.)",Investor,FALSE,system
+cf_011,commitment_amount,DECIMAL,Total capital committed by investor,Capital,TRUE,system
+cf_012,called_capital,DECIMAL,Capital called from investor to date,Capital,TRUE,system
+cf_013,distributed_capital,DECIMAL,Capital distributed to investor to date,Capital,FALSE,system
+cf_014,unfunded_commitment,DECIMAL,Remaining capital to be called,Capital,FALSE,system
+cf_015,management_fee_rate,DECIMAL,Annual management fee percentage,Fees,FALSE,system
+cf_016,performance_fee_rate,DECIMAL,Performance/incentive fee percentage (carry),Fees,FALSE,system
+cf_017,transaction_date,DATE,Date the transaction occurred,Transaction,TRUE,system
+cf_018,transaction_type,STRING,"Type of transaction (subscription, redemption, transfer)",Transaction,TRUE,system
+cf_019,transaction_amount,DECIMAL,Monetary amount of the transaction,Transaction,TRUE,system
+cf_020,security_identifier,STRING,"Unique identifier for a security (ISIN, CUSIP, SEDOL)",Security,TRUE,system
+cf_021,security_name,STRING,Full name of the security,Security,FALSE,system
+cf_022,position_quantity,DECIMAL,Number of units/shares held,Position,TRUE,system
+cf_023,market_value,DECIMAL,Current market value of the position,Position,TRUE,system
+cf_024,cost_basis,DECIMAL,Original cost basis of the position,Position,FALSE,system
+cf_025,reporting_period,STRING,"Reporting period (e.g., Q1 2025, monthly)",Reporting,FALSE,system
+cf_026,custodian_name,STRING,Name of the custodian bank,Operations,FALSE,system
+cf_027,account_number,STRING,Custodian or broker account number,Operations,FALSE,system
+cf_028,settlement_date,DATE,Date the transaction settles,Transaction,FALSE,system
+cf_029,counterparty_name,STRING,Name of the counterparty in a transaction,Transaction,FALSE,system
+cf_030,asset_class,STRING,"Classification of the asset (equity, fixed income, etc.)",Security,FALSE,system

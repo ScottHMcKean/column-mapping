@@ -1,1011 +1,1424 @@
 """
-Column Mapping Review App
+Citco Column Mapper
+===================
+Two-page Streamlit app for cross-platform column standardization.
 
-Multi-tab Streamlit app that guides data stewards through the column
-standardization workflow:
-  1. Source Systems  -- discover what's there
-  2. Review Mappings -- approve / reject / edit LLM proposals
-  3. Canonical Map   -- cross-system pivot of canonical concepts
-  4. Rules           -- manage naming rules
+  Data Mapping -- Discover source columns, run the AI mapping agent, review proposals
+  Master File  -- Manage the canonical field registry, gold views, and audit log
+
+All tables are Delta tables in Unity Catalog (serverless SQL warehouse).
+Tables and seed data are created by the 01_setup_data Databricks job.
 """
 
+import json
 import os
 import sys
-import traceback
 import uuid
-from datetime import datetime, timezone
-
-import numpy as np
-
-
-def _log(msg):
-    print(f"[app] {msg}", file=sys.stderr, flush=True)
-
-
-_log("app.py: module load starting")
+from difflib import SequenceMatcher
 
 import pandas as pd
 import streamlit as st
 from databricks.sdk import WorkspaceClient
 
-try:
-    import faiss
-    from sklearn.feature_extraction.text import TfidfVectorizer
 
-    FAISS_AVAILABLE = True
-except ImportError:
-    FAISS_AVAILABLE = False
-    _log("faiss or scikit-learn not available; similarity search disabled")
+def _log(msg):
+    print(f"[citco] {msg}", file=sys.stderr, flush=True)
 
-_log(f"streamlit {st.__version__} on Python {sys.version_info[:2]}")
 
-st.set_page_config(page_title="Column Mapping Review", layout="wide")
+# =====================================================================
+# PAGE CONFIG & BRANDING
+# =====================================================================
 
-_DATABRICKS_CSS = """
+st.set_page_config(
+    page_title="Citco Column Mapper",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+_CSS = """
 <style>
-    html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
-    h1, h2, h3, h4, h5, h6,
-    .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
-        font-family: 'DM Sans', sans-serif;
-        color: #FF3621 !important;
-    }
-    [data-testid="stSidebarContent"] h1,
-    [data-testid="stSidebarContent"] h2,
-    [data-testid="stSidebarContent"] h3 { color: #FF3621 !important; }
-    .stButton > button[kind="primary"],
-    .stButton > button[data-testid="stBaseButton-primary"] {
-        background-color: #FF3621; border-color: #FF3621;
-    }
-    .stButton > button[kind="primary"]:hover,
-    .stButton > button[data-testid="stBaseButton-primary"]:hover {
-        background-color: #E02E1B; border-color: #E02E1B;
-    }
-    [data-testid="stMetricValue"] { color: #1B3139; }
-    hr { border-color: #FF3621 !important; opacity: 0.3; }
-</style>
-"""
-st.markdown(_DATABRICKS_CSS, unsafe_allow_html=True)
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+html, body, [class*="css"] { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
 
-# ---------------------------------------------------------------------------
-# Configuration -- env vars > config.yaml > defaults
-# ---------------------------------------------------------------------------
+section[data-testid="stMainBlockContainer"],
+[data-testid="stAppViewContainer"],
+.main .block-container { background-color: #ffffff; color: #1a1a1a; }
+header[data-testid="stHeader"] { background-color: #ffffff; }
 
-METADATA_TABLES = {
-    "standardization_mappings", "standardization_rules",
-    "canonical_columns", "column_approvals",
+h1, .stMarkdown h1 { color: #1B2A4A !important; font-weight: 700 !important; }
+h2, h3, h4, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 {
+    color: #1B2A4A !important; font-weight: 600 !important;
 }
 
+[data-testid="stSidebarContent"] { background-color: #f8f9fa; color: #1a1a1a; }
+[data-testid="stSidebarContent"] h1,
+[data-testid="stSidebarContent"] h2,
+[data-testid="stSidebarContent"] h3 { color: #1B2A4A !important; }
+[data-testid="stSidebarContent"] label,
+[data-testid="stSidebarContent"] .stMarkdown p { color: #1B2A4A !important; }
+[data-testid="stSidebarContent"] .stCaption p { color: #555 !important; }
+
+[data-testid="stMetricValue"] { color: #1B2A4A; font-weight: 700; }
+[data-testid="stMetricLabel"] p { color: #555; font-weight: 500; }
+
+div[data-testid="stMetric"] {
+    background-color: #f8f9fa; border: 1px solid #e0e0e0;
+    border-radius: 8px; padding: 12px 16px;
+}
+
+.stButton > button[kind="primary"],
+.stButton > button[data-testid="stBaseButton-primary"] {
+    background-color: #1B2A4A !important; border-color: #1B2A4A !important;
+    color: #ffffff !important; font-weight: 600 !important;
+    border-radius: 6px !important;
+}
+.stButton > button[kind="primary"]:hover,
+.stButton > button[data-testid="stBaseButton-primary"]:hover {
+    background-color: #2C3F66 !important; border-color: #2C3F66 !important;
+}
+
+hr { border-color: #e0e0e0 !important; opacity: 0.8; }
+.stProgress > div > div > div > div { background-color: #1B2A4A; }
+
+[data-testid="stTabs"] [data-baseweb="tab"] {
+    font-weight: 500; font-size: 0.95em; padding: 10px 20px;
+}
+[data-testid="stTabs"] [data-baseweb="tab"][aria-selected="true"] {
+    color: #1B2A4A !important; border-bottom-color: #1B2A4A !important;
+    font-weight: 600;
+}
+
+.badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 0.75em; font-weight: 600; margin: 1px 2px; color: #fff;
+}
+.badge-high { background-color: #10B981; }
+.badge-medium { background-color: #F59E0B; }
+.badge-low { background-color: #EF4444; }
+.badge-active { background-color: #10B981; }
+.badge-pending { background-color: #F59E0B; }
+.badge-linked { background-color: #3B82F6; }
+.badge-plat   { background-color: #3B82F6; }
+.badge-plat-1 { background-color: #10B981; }
+.badge-plat-2 { background-color: #8B5CF6; }
+.badge-plat-3 { background-color: #EF4444; }
+.badge-plat-4 { background-color: #F59E0B; }
+.badge-plat-5 { background-color: #EC4899; }
+</style>
+"""
+st.markdown(_CSS, unsafe_allow_html=True)
+
+
+# =====================================================================
+# CONFIGURATION
+# =====================================================================
 
 def _load_config_yaml():
     try:
-        import yaml  # type: ignore
+        import yaml
     except ImportError:
         return {}
-    candidates = [
+    for candidate in [
         os.path.join(os.path.dirname(__file__), "..", "config.yaml"),
         "config.yaml",
-    ]
-    for path in candidates:
-        path = os.path.abspath(path)
+    ]:
+        path = os.path.abspath(candidate)
         if os.path.isfile(path):
-            _log(f"loading config from {path}")
             with open(path) as f:
                 return yaml.safe_load(f) or {}
     return {}
 
 
-def _resolve_config():
-    cfg = _load_config_yaml()
-    db = cfg.get("databricks", {})
-    tables = cfg.get("tables", {})
+CFG = _load_config_yaml()
+DB = CFG.get("databricks", {})
+TABLES = CFG.get("tables", {})
+PLATFORMS = CFG.get("platforms", [])
+GOLD = CFG.get("gold", {})
 
-    catalog = db.get("catalog", "shm")
-    schema = db.get("schema", "columnmapping")
+CATALOG = DB.get("catalog", "citco_mapping")
+SCHEMA = DB.get("schema", "mapping")
+WAREHOUSE_ID = os.getenv("DATABRICKS_WAREHOUSE_ID") or DB.get("warehouse_id", "")
+LLM_ENDPOINT = CFG.get("llm", {}).get("endpoint", "databricks-claude-sonnet-4-5")
 
-    mappings = os.getenv("MAPPINGS_TABLE") or (
-        f"{catalog}.{schema}.{tables.get('mappings_table_name', 'standardization_mappings')}"
-    )
-    canonical = os.getenv("CANONICAL_TABLE") or (
-        f"{catalog}.{schema}.{tables.get('canonical_columns_table_name', 'canonical_columns')}"
-    )
-    rules = os.getenv("RULES_TABLE") or (
-        f"{catalog}.{schema}.{tables.get('rules_table_name', 'standardization_rules')}"
-    )
-    warehouse = os.getenv("DATABRICKS_WAREHOUSE_ID") or db.get("warehouse_id", "")
+GOLD_CATALOG = GOLD.get("catalog", CATALOG)
+GOLD_SCHEMA = GOLD.get("schema", "gold")
 
-    return catalog, schema, mappings, canonical, rules, warehouse
+PLAT_BY_ID = {p["id"]: p for p in PLATFORMS}
+PLAT_NAMES = {p["id"]: p["name"] for p in PLATFORMS}
+PLAT_IDS = [p["id"] for p in PLATFORMS]
+
+_BADGE_CLASSES = ["badge-plat", "badge-plat-1", "badge-plat-2", "badge-plat-3", "badge-plat-4", "badge-plat-5"]
+PLAT_BADGE_CLASS = {pid: _BADGE_CLASSES[i % len(_BADGE_CLASSES)] for i, pid in enumerate(PLAT_IDS)}
 
 
-CATALOG, SCHEMA, MAPPINGS_TABLE, CANONICAL_TABLE, RULES_TABLE, WAREHOUSE_ID = (
-    _resolve_config()
-)
+def _fqn(table_key: str) -> str:
+    return f"{CATALOG}.{SCHEMA}.{TABLES.get(table_key, table_key)}"
 
-_log(f"config: {CATALOG}.{SCHEMA}")
-_log(f"config: WAREHOUSE_ID={'(set)' if WAREHOUSE_ID else '(auto-discover)'}")
 
-DISPLAY_COLUMNS = [
-    "mapping_id", "version", "source_system", "platform_header",
-    "standardized_header", "domain", "data_type", "confidence_score",
-    "transformation_notes", "approval_status",
-]
+T_CANONICAL = _fqn("canonical_fields")
+T_SOURCE = _fqn("source_columns")
+T_PROPOSALS = _fqn("mapping_proposals")
+T_APPROVED = _fqn("approved_mappings")
+T_AUDIT = _fqn("audit_log")
+T_RULES = _fqn("standardization_rules")
 
-# ---------------------------------------------------------------------------
-# Databricks helpers
-# ---------------------------------------------------------------------------
 
+# =====================================================================
+# DATABASE HELPERS (serverless SQL warehouse)
+# =====================================================================
 
 @st.cache_resource
-def get_workspace_client():
-    _log("creating WorkspaceClient()")
-    wc = WorkspaceClient()
-    _log("WorkspaceClient created ok")
-    return wc
+def get_ws():
+    profile = DB.get("profile")
+    if profile:
+        return WorkspaceClient(profile=profile)
+    return WorkspaceClient()
 
 
-def get_current_user():
+def get_current_user() -> str:
     try:
         headers = st.context.headers
-        for key in (
-            "X-Forwarded-Email",
-            "X-Forwarded-Preferred-Username",
-            "X-Forwarded-User",
-        ):
-            val = headers.get(key)
-            if val:
+        for key in ("X-Forwarded-Email", "X-Forwarded-Preferred-Username"):
+            if (val := headers.get(key)):
                 return val
     except Exception:
         pass
     try:
-        me = get_workspace_client().current_user.me()
+        me = get_ws().current_user.me()
         return me.user_name or me.display_name or "unknown"
     except Exception:
         return "unknown"
 
 
-def _esc(val):
+def _get_warehouse_id() -> str:
+    global WAREHOUSE_ID
+    if WAREHOUSE_ID:
+        return WAREHOUSE_ID
+    ws = get_ws()
+    for wh in ws.warehouses.list():
+        if wh.state and wh.state.value in ("RUNNING", "STARTING"):
+            WAREHOUSE_ID = wh.id
+            return WAREHOUSE_ID
+    for wh in ws.warehouses.list():
+        if wh.id:
+            WAREHOUSE_ID = wh.id
+            return WAREHOUSE_ID
+    raise RuntimeError("No SQL warehouse found. Set DATABRICKS_WAREHOUSE_ID or add warehouse_id to config.yaml.")
+
+
+def _esc(val) -> str:
     if val is None:
         return "NULL"
     return "'" + str(val).replace("'", "''") + "'"
 
 
-def _get_warehouse_id():
-    global WAREHOUSE_ID
-    if WAREHOUSE_ID:
-        return WAREHOUSE_ID
-
-    _log("auto-discovering SQL warehouse...")
-    ws = get_workspace_client()
-    for wh in ws.warehouses.list():
-        if wh.state and wh.state.value in ("RUNNING", "STARTING"):
-            WAREHOUSE_ID = wh.id
-            _log(f"using warehouse: {wh.name} ({wh.id})")
-            return WAREHOUSE_ID
-    for wh in ws.warehouses.list():
-        if wh.id:
-            WAREHOUSE_ID = wh.id
-            _log(f"using warehouse (stopped): {wh.name} ({wh.id})")
-            return WAREHOUSE_ID
-    raise RuntimeError(
-        "No SQL warehouse found. Set warehouse_id in config.yaml "
-        "or DATABRICKS_WAREHOUSE_ID env var."
-    )
-
-
-def execute_query(query):
+def run_sql(query: str) -> list[dict]:
+    """Execute SQL via the serverless warehouse and return rows as dicts."""
     wid = _get_warehouse_id()
-    ws = get_workspace_client()
-    resp = ws.statement_execution.execute_statement(
-        warehouse_id=wid, statement=query, wait_timeout="30s",
+    resp = get_ws().statement_execution.execute_statement(
+        warehouse_id=wid, statement=query, wait_timeout="50s",
     )
     if resp.status and resp.status.error:
         raise RuntimeError(f"SQL error: {resp.status.error.message}")
     if resp.result and resp.result.data_array:
-        columns = [c.name for c in resp.manifest.schema.columns]
-        return [dict(zip(columns, row)) for row in resp.result.data_array]
+        cols = [c.name for c in resp.manifest.schema.columns]
+        return [dict(zip(cols, row)) for row in resp.result.data_array]
     return []
 
 
-def execute_statement(query):
+def run_stmt(query: str) -> None:
+    """Execute a DML statement (INSERT/UPDATE/DELETE) via the SQL warehouse."""
     wid = _get_warehouse_id()
-    ws = get_workspace_client()
-    resp = ws.statement_execution.execute_statement(
-        warehouse_id=wid, statement=query, wait_timeout="30s",
+    resp = get_ws().statement_execution.execute_statement(
+        warehouse_id=wid, statement=query, wait_timeout="50s",
     )
     if resp.status and resp.status.error:
         raise RuntimeError(f"SQL error: {resp.status.error.message}")
 
 
-# ---------------------------------------------------------------------------
-# Data loading
-# ---------------------------------------------------------------------------
+# =====================================================================
+# CACHED DATA LOADING
+# =====================================================================
+
+def _safe_load(query: str) -> list[dict]:
+    try:
+        return run_sql(query)
+    except RuntimeError as exc:
+        msg = str(exc)
+        if "TABLE_OR_VIEW_NOT_FOUND" in msg or "UNRESOLVED_COLUMN" in msg:
+            _log(f"safe_load fallback: {msg[:120]}")
+            return []
+        raise
 
 
-def load_current_mappings():
-    _log(f"load_current_mappings: querying {MAPPINGS_TABLE}")
-    rows = execute_query(
-        f"""
-        SELECT
-            mapping_id,
-            CAST(version AS INT) AS version,
-            source_system,
-            platform_header,
-            standardized_header,
-            domain,
-            data_type,
-            CAST(confidence_score AS INT) AS confidence_score,
-            COALESCE(transformation_notes, '') AS transformation_notes,
-            approval_status
-        FROM {MAPPINGS_TABLE}
-        WHERE valid_to IS NULL
-        ORDER BY confidence_score DESC, source_system, platform_header
-        """
-    )
-    df = pd.DataFrame(rows, columns=DISPLAY_COLUMNS)
-    df["confidence_score"] = (
-        pd.to_numeric(df["confidence_score"], errors="coerce").fillna(0).astype(int)
-    )
-    df["version"] = (
-        pd.to_numeric(df["version"], errors="coerce").fillna(1).astype(int)
-    )
-    _log(f"load_current_mappings: loaded {len(df)} current rows")
-    return df
+@st.cache_data(ttl=120, show_spinner=False)
+def load_canonical():
+    rows = _safe_load(f"SELECT * FROM {T_CANONICAL} ORDER BY canonical_name")
+    return [r for r in rows if r.get("is_active") in (True, "true", None)]
 
 
-def load_source_tables():
-    _log("load_source_tables: querying information_schema")
-    rows = execute_query(
-        f"""
-        SELECT
-            t.table_name,
-            COUNT(c.column_name) AS column_count
-        FROM {CATALOG}.information_schema.tables t
-        JOIN {CATALOG}.information_schema.columns c
-            ON t.table_catalog = c.table_catalog
-            AND t.table_schema = c.table_schema
-            AND t.table_name = c.table_name
-        WHERE t.table_catalog = '{CATALOG}'
-          AND t.table_schema = '{SCHEMA}'
-          AND t.table_type IN ('MANAGED', 'EXTERNAL')
-        GROUP BY t.table_name
-        ORDER BY t.table_name
-        """
-    )
-    return [
-        r for r in rows
-        if r["table_name"] not in METADATA_TABLES
-        and not r["table_name"].endswith("_index")
-    ]
+@st.cache_data(ttl=120, show_spinner=False)
+def load_source_columns():
+    return _safe_load(f"SELECT * FROM {T_SOURCE} ORDER BY platform_id, source_table, column_name")
 
 
-def load_canonical_columns():
-    _log(f"load_canonical_columns: querying {CANONICAL_TABLE}")
-    rows = execute_query(
-        f"""
-        SELECT canonical_name, business_definition, domain, expected_data_type
-        FROM {CANONICAL_TABLE}
-        ORDER BY canonical_name
-        """
-    )
-    return rows
+@st.cache_data(ttl=60, show_spinner=False)
+def load_proposals():
+    return _safe_load(f"SELECT * FROM {T_PROPOSALS} ORDER BY confidence DESC")
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def load_approved_mappings():
+    return _safe_load(f"SELECT * FROM {T_APPROVED} ORDER BY approved_at DESC")
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_audit(limit=500):
+    return _safe_load(f"SELECT * FROM {T_AUDIT} ORDER BY created_at DESC LIMIT {limit}")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def load_rules():
-    _log(f"load_rules: querying {RULES_TABLE}")
-    rows = execute_query(
-        f"""
-        SELECT rule_id, rule_type, rule_key, rule_value,
-               rule_description, examples, is_active
-        FROM {RULES_TABLE}
-        WHERE is_active = true
-        ORDER BY rule_type, rule_key
-        """
+    return _safe_load(f"SELECT * FROM {T_RULES} ORDER BY rule_type, pattern")
+
+
+def invalidate():
+    for fn in [load_canonical, load_source_columns, load_proposals,
+               load_approved_mappings, load_audit, load_rules]:
+        fn.clear()
+
+
+if "cache_warmed" not in st.session_state:
+    invalidate()
+    st.session_state["cache_warmed"] = True
+
+
+# =====================================================================
+# AUDIT LOGGING
+# =====================================================================
+
+def log_audit(entity_type: str, entity_id: str, action: str, actor: str,
+              details: dict | None = None):
+    eid = uuid.uuid4().hex[:12]
+    run_stmt(
+        f"INSERT INTO {T_AUDIT} "
+        f"(event_id, entity_type, entity_id, action, actor, details, created_at) "
+        f"VALUES ({_esc(eid)}, {_esc(entity_type)}, {_esc(entity_id)}, "
+        f"{_esc(action)}, {_esc(actor)}, "
+        f"{_esc(json.dumps(details) if details else None)}, current_timestamp())"
     )
-    return rows
 
 
-def get_mappings_df():
-    if "mappings_df" not in st.session_state:
-        st.session_state["mappings_df"] = load_current_mappings()
-    return st.session_state["mappings_df"]
+# =====================================================================
+# BATCH MAPPING JOB (runs in-app via SQL warehouse)
+# =====================================================================
 
+def discover_source_columns() -> int:
+    """Discover new columns from INFORMATION_SCHEMA and insert into source_columns."""
+    batch_id = uuid.uuid4().hex[:12]
 
-def get_source_tables():
-    if "source_tables" not in st.session_state:
-        st.session_state["source_tables"] = load_source_tables()
-    return st.session_state["source_tables"]
+    existing = _safe_load(f"SELECT platform_id, source_table, column_name FROM {T_SOURCE}")
+    existing_set = {(r["platform_id"], r["source_table"], r["column_name"]) for r in existing}
 
-
-def get_canonical_columns():
-    if "canonical_columns" not in st.session_state:
-        st.session_state["canonical_columns"] = load_canonical_columns()
-    return st.session_state["canonical_columns"]
-
-
-def get_rules():
-    if "rules" not in st.session_state:
-        st.session_state["rules"] = load_rules()
-    return st.session_state["rules"]
-
-
-def apply_local_edits(df):
-    edits = st.session_state.get("pending_edits", {})
-    if not edits:
-        return df
-    df = df.copy()
-    for mapping_id, edit in edits.items():
-        mask = df["mapping_id"] == mapping_id
-        if mask.any():
-            for field in ("approval_status", "standardized_header", "domain", "data_type"):
-                if field in edit:
-                    df.loc[mask, field] = edit[field]
-    return df
-
-
-# ---------------------------------------------------------------------------
-# FAISS in-memory vector search
-# ---------------------------------------------------------------------------
-
-
-def build_faiss_index(approved_df):
-    if not FAISS_AVAILABLE or approved_df.empty:
-        return None, None, None
-
-    texts = approved_df["platform_header"].tolist()
-    vectorizer = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4))
-    tfidf_matrix = vectorizer.fit_transform(texts)
-
-    vectors = np.ascontiguousarray(tfidf_matrix.toarray().astype("float32"))
-    faiss.normalize_L2(vectors)
-
-    index = faiss.IndexFlatIP(vectors.shape[1])
-    index.add(vectors)
-
-    _log(f"built FAISS index: {len(texts)} vectors, {vectors.shape[1]} dimensions")
-    return index, vectorizer, approved_df.reset_index(drop=True)
-
-
-def get_faiss_index():
-    if "faiss_index" not in st.session_state:
-        df = get_mappings_df()
-        approved = df[df["approval_status"] == "approved"]
-        st.session_state["faiss_index"] = build_faiss_index(approved)
-    return st.session_state["faiss_index"]
-
-
-def search_similar_mappings(query, top_k=5):
-    index, vectorizer, approved_df = get_faiss_index()
-    if index is None or approved_df is None or approved_df.empty:
-        return pd.DataFrame()
-
-    query_vec = vectorizer.transform([query]).toarray().astype("float32")
-    faiss.normalize_L2(query_vec)
-
-    k = min(top_k, len(approved_df))
-    scores, indices = index.search(query_vec, k)
-
-    results = approved_df.iloc[indices[0]].copy()
-    results["similarity"] = (scores[0] * 100).astype(int)
-    return results[results["similarity"] > 0].reset_index(drop=True)
-
-
-# ---------------------------------------------------------------------------
-# Session-state edit tracking
-# ---------------------------------------------------------------------------
-
-
-def init_session_state():
-    if "pending_edits" not in st.session_state:
-        st.session_state["pending_edits"] = {}
-
-
-def stage_status_change(mapping_ids, new_status, user):
-    now = datetime.now(timezone.utc).isoformat()
-    for mid in mapping_ids:
-        existing = st.session_state["pending_edits"].get(mid, {})
-        existing.update({
-            "mapping_id": mid,
-            "approval_status": new_status,
-            "changed_by": user,
-            "changed_at": now,
-            "change_reason": f"{new_status.replace('_', ' ').title()} by steward",
-        })
-        st.session_state["pending_edits"][mid] = existing
-    return len(mapping_ids)
-
-
-def stage_field_edit(mapping_id, field, value, user):
-    now = datetime.now(timezone.utc).isoformat()
-    existing = st.session_state["pending_edits"].get(mapping_id, {})
-    old_value = existing.get(f"_old_{field}")
-    existing.update({
-        "mapping_id": mapping_id,
-        field: value,
-        "changed_by": user,
-        "changed_at": now,
-    })
-    reason_parts = existing.get("change_reason", "").split("; ")
-    reason_parts = [r for r in reason_parts if not r.startswith(f"Edited {field}")]
-    if old_value is None:
-        df = get_mappings_df()
-        row = df[df["mapping_id"] == mapping_id]
-        if not row.empty:
-            old_value = row.iloc[0][field]
-            existing[f"_old_{field}"] = old_value
-    reason_parts.append(f"Edited {field}: {old_value} -> {value}")
-    existing["change_reason"] = "; ".join(r for r in reason_parts if r)
-    st.session_state["pending_edits"][mapping_id] = existing
-
-
-def discard_edits():
-    st.session_state["pending_edits"] = {}
-
-
-# ---------------------------------------------------------------------------
-# Canonical column auto-creation
-# ---------------------------------------------------------------------------
-
-
-def ensure_canonical_column(standardized_header, domain, data_type, created_by):
-    existing = get_canonical_columns()
-    known_names = {c["canonical_name"] for c in existing}
-    if standardized_header in known_names:
-        return
-
-    execute_statement(
-        f"""
-        INSERT INTO {CANONICAL_TABLE}
-            (canonical_name, business_definition, domain,
-             expected_data_type, created_by, created_at)
-        VALUES
-            ({_esc(standardized_header)},
-             {_esc('Auto-created from mapping approval')},
-             {_esc(domain)}, {_esc(data_type)},
-             {_esc(created_by)}, current_timestamp())
-        """
-    )
-    _log(f"auto-created canonical column: {standardized_header}")
-    st.session_state.pop("canonical_columns", None)
-
-
-# ---------------------------------------------------------------------------
-# Commit: Type 2 SCD version insert
-# ---------------------------------------------------------------------------
-
-
-def commit_edits():
-    edits = st.session_state.get("pending_edits", {})
-    if not edits:
-        return 0
-
-    df = get_mappings_df()
-
-    for edit in edits.values():
-        mid = edit["mapping_id"]
-        row = df[df["mapping_id"] == mid]
-        if row.empty:
+    new_count = 0
+    for plat in PLATFORMS:
+        pid = plat["id"]
+        src_catalog = plat.get("source_catalog", CATALOG)
+        src_schema = plat.get("source_schema", pid)
+        try:
+            cols = run_sql(
+                f"SELECT table_catalog, table_schema, table_name, column_name, data_type "
+                f"FROM {src_catalog}.information_schema.columns "
+                f"WHERE table_schema = '{src_schema}'"
+            )
+        except Exception as exc:
+            _log(f"discover skip {pid}: {exc}")
             continue
 
-        current = row.iloc[0]
-        new_version = int(current["version"]) + 1
+        for col in cols:
+            fq_table = f"{col['table_catalog']}.{col['table_schema']}.{col['table_name']}"
+            key = (pid, fq_table, col["column_name"])
+            if key not in existing_set:
+                cid = uuid.uuid4().hex[:12]
+                run_stmt(
+                    f"INSERT INTO {T_SOURCE} "
+                    f"(column_id, platform_id, source_table, column_name, data_type, batch_id, detected_at) "
+                    f"VALUES ({_esc(cid)}, {_esc(pid)}, {_esc(fq_table)}, "
+                    f"{_esc(col['column_name'])}, {_esc(col.get('data_type', 'STRING'))}, "
+                    f"{_esc(batch_id)}, current_timestamp())"
+                )
+                existing_set.add(key)
+                new_count += 1
 
-        new_status = edit.get("approval_status", current["approval_status"])
-        new_std_header = edit.get("standardized_header", current["standardized_header"])
-        new_domain = edit.get("domain", current["domain"])
-        new_data_type = edit.get("data_type", current["data_type"])
-        changed_by = edit.get("changed_by", "unknown")
-        change_reason = edit.get("change_reason", "Updated by steward")
-
-        execute_statement(
-            f"""
-            UPDATE {MAPPINGS_TABLE}
-            SET valid_to = current_timestamp()
-            WHERE mapping_id = {_esc(mid)} AND valid_to IS NULL
-            """
-        )
-
-        execute_statement(
-            f"""
-            INSERT INTO {MAPPINGS_TABLE}
-                (mapping_id, version, source_system, platform_header,
-                 standardized_header, domain, data_type,
-                 transformation_notes, confidence_score, approval_status,
-                 valid_from, valid_to, changed_by, change_reason)
-            VALUES
-                ({_esc(mid)}, {new_version}, {_esc(current['source_system'])},
-                 {_esc(current['platform_header'])},
-                 {_esc(new_std_header)}, {_esc(new_domain)}, {_esc(new_data_type)},
-                 {_esc(current['transformation_notes'])},
-                 {int(current['confidence_score'])}, {_esc(new_status)},
-                 current_timestamp(), NULL,
-                 {_esc(changed_by)}, {_esc(change_reason)})
-            """
-        )
-
-        if new_status == "approved":
-            ensure_canonical_column(new_std_header, new_domain, new_data_type, changed_by)
-
-    count = len(edits)
-    discard_edits()
-    _invalidate_caches()
-    return count
+    return new_count
 
 
-def _invalidate_caches():
-    for key in ("mappings_df", "canonical_columns", "rules", "faiss_index", "source_tables"):
-        st.session_state.pop(key, None)
-    st.session_state["mappings_df"] = load_current_mappings()
+def _deterministic_fast_match(col: dict, canonical: list[dict], rules: list[dict]) -> dict | None:
+    """Try to match a column to a canonical field without calling the LLM.
+
+    Returns a result dict if there's a high-confidence deterministic match,
+    or None to fall back to the full LLM pipeline.
+    """
+    src_dir = os.path.join(os.path.dirname(__file__), "..", "src")
+    abs_src = os.path.abspath(src_dir)
+    if abs_src not in sys.path:
+        sys.path.insert(0, abs_src)
+
+    from column_mapping.agent_tools import deterministic_standardize, get_abbreviation_rules
+
+    abbrevs = get_abbreviation_rules(rules)
+    std_name = deterministic_standardize(col["column_name"], abbrevs)
+
+    canon_by_name = {c["canonical_name"]: c for c in canonical}
+    if std_name in canon_by_name:
+        c = canon_by_name[std_name]
+        return {
+            "canonical_id": c["canonical_id"],
+            "canonical_name": c["canonical_name"],
+            "confidence": 95,
+            "rationale": f"Deterministic match: '{col['column_name']}' standardizes to '{std_name}' which exactly matches canonical field.",
+        }
+
+    for cname, c in canon_by_name.items():
+        if std_name.replace("_", "") == cname.replace("_", ""):
+            return {
+                "canonical_id": c["canonical_id"],
+                "canonical_name": c["canonical_name"],
+                "confidence": 90,
+                "rationale": f"Near-exact match: '{col['column_name']}' standardizes to '{std_name}', matches '{cname}' after normalization.",
+            }
+
+    return None
 
 
-# ---------------------------------------------------------------------------
-# Add rule
-# ---------------------------------------------------------------------------
+def run_batch_mapping(progress_bar=None, status_text=None) -> int:
+    """Run the mapping agent on all unmapped source columns.
 
+    Uses a deterministic fast-path for obvious matches and parallel LLM
+    calls (8 concurrent threads) for the rest.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-def insert_rule(rule_type, rule_key, rule_value, rule_description, examples):
-    rule_id = f"{rule_type[:3].upper()}-{uuid.uuid4().hex[:6].upper()}"
-    execute_statement(
-        f"""
-        INSERT INTO {RULES_TABLE}
-            (rule_id, rule_type, rule_key, rule_value,
-             rule_description, examples, is_active)
-        VALUES
-            ({_esc(rule_id)}, {_esc(rule_type)}, {_esc(rule_key)},
-             {_esc(rule_value)}, {_esc(rule_description)},
-             {_esc(examples)}, true)
-        """
+    src_dir = os.path.join(os.path.dirname(__file__), "..", "src")
+    abs_src = os.path.abspath(src_dir)
+    if abs_src not in sys.path:
+        sys.path.insert(0, abs_src)
+
+    from column_mapping.mapping_agent import run_mapping_agent
+
+    batch_id = uuid.uuid4().hex[:12]
+    all_source = _safe_load(f"SELECT * FROM {T_SOURCE}")
+    approved = _safe_load(f"SELECT * FROM {T_APPROVED}")
+    canonical = _safe_load(f"SELECT * FROM {T_CANONICAL}")
+    rules = _safe_load(f"SELECT * FROM {T_RULES}")
+
+    mapped_ids = {m["column_id"] for m in approved}
+    proposed_rows = _safe_load(
+        f"SELECT column_id FROM {T_PROPOSALS} WHERE status IN ('pending_review', 'approved')"
     )
-    st.session_state.pop("rules", None)
-    return rule_id
+    proposed_ids = {r["column_id"] for r in proposed_rows}
+
+    unmapped = [
+        c for c in all_source
+        if c["column_id"] not in mapped_ids and c["column_id"] not in proposed_ids
+    ]
+
+    if not unmapped:
+        return 0
+
+    counter = {"done": 0, "written": 0}
+    lock = threading.Lock()
+    total = len(unmapped)
+
+    def _write_proposal(col, canonical_id, canonical_name, confidence, rationale, model_name):
+        confidence_level = (
+            "high" if confidence >= 85
+            else "medium" if confidence >= 60
+            else "low"
+        )
+        prop_id = uuid.uuid4().hex[:12]
+        run_stmt(
+            f"INSERT INTO {T_PROPOSALS} "
+            f"(proposal_id, column_id, suggested_canonical_id, suggested_canonical_name, "
+            f"confidence, confidence_level, reasoning, agent_model, batch_id, status, created_at) "
+            f"VALUES ({_esc(prop_id)}, {_esc(col['column_id'])}, "
+            f"{_esc(canonical_id)}, {_esc(canonical_name)}, "
+            f"{confidence}, {_esc(confidence_level)}, "
+            f"{_esc((rationale or '')[:500])}, {_esc(model_name)}, "
+            f"{_esc(batch_id)}, 'pending_review', current_timestamp())"
+        )
+        run_stmt(
+            f"INSERT INTO {T_AUDIT} "
+            f"(event_id, entity_type, entity_id, action, actor, details, created_at) "
+            f"VALUES ({_esc(uuid.uuid4().hex[:12])}, 'proposal', {_esc(prop_id)}, "
+            f"'created', 'agent_batch', "
+            f"{_esc(json.dumps({'column': col['column_name'], 'confidence': confidence}))}, "
+            f"current_timestamp())"
+        )
+        return True
+
+    # Phase 1: deterministic fast-path (no LLM needed)
+    need_llm = []
+    for col in unmapped:
+        fast = _deterministic_fast_match(col, canonical, rules)
+        if fast:
+            _write_proposal(col, fast["canonical_id"], fast["canonical_name"],
+                            fast["confidence"], fast["rationale"], "deterministic")
+            counter["written"] += 1
+            counter["done"] += 1
+            _log(f"fast-match: {col['column_name']} -> {fast['canonical_name']}")
+        else:
+            need_llm.append(col)
+
+    if status_text:
+        status_text.text(f"Fast-matched {counter['written']}/{total}. Running LLM on {len(need_llm)} remaining...")
+    if progress_bar:
+        progress_bar.progress(counter["done"] / total if total else 1.0)
+
+    # Phase 2: parallel LLM calls for remaining columns
+    def _process_one(col):
+        pname = PLAT_NAMES.get(col["platform_id"], col["platform_id"])
+        try:
+            result = run_mapping_agent(
+                column_name=col["column_name"],
+                platform_id=col["platform_id"],
+                platform_name=pname,
+                source_columns=all_source,
+                approved_mappings=approved,
+                canonical_fields=canonical,
+                rules=rules,
+                sql_fn=run_sql,
+                llm_endpoint=LLM_ENDPOINT,
+            )
+        except Exception as exc:
+            _log(f"agent error for {col['column_name']}: {exc}")
+            return None
+
+        if result.error:
+            _log(f"agent result error for {col['column_name']}: {result.error}")
+            return None
+
+        _write_proposal(
+            col, result.recommended_canonical_id, result.recommended_canonical_name,
+            result.confidence, result.rationale, LLM_ENDPOINT,
+        )
+        return col["column_name"]
+
+    if need_llm:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_process_one, col): col for col in need_llm}
+            for future in as_completed(futures):
+                col = futures[future]
+                with lock:
+                    counter["done"] += 1
+                    name = future.result()
+                    if name:
+                        counter["written"] += 1
+                    if progress_bar:
+                        progress_bar.progress(counter["done"] / total)
+                    if status_text:
+                        status_text.text(
+                            f"[{counter['done']}/{total}] "
+                            f"{PLAT_NAMES.get(col['platform_id'], '')} | {col['column_name']}"
+                        )
+
+    return counter["written"]
 
 
-# ---------------------------------------------------------------------------
-# Mapping history
-# ---------------------------------------------------------------------------
+# =====================================================================
+# HELPER FUNCTIONS
+# =====================================================================
+
+def name_similarity(name_a: str, name_b: str) -> float:
+    if not name_a or not name_b:
+        return 0.0
+    tokens_a = set(name_a.lower().split("_"))
+    tokens_b = set(name_b.lower().split("_"))
+    overlap = len(tokens_a & tokens_b) / max(len(tokens_a), len(tokens_b))
+    sequence = SequenceMatcher(None, name_a.lower(), name_b.lower()).ratio()
+    return overlap * 0.5 + sequence * 0.5
 
 
-def load_mapping_history(mapping_id):
-    rows = execute_query(
-        f"""
-        SELECT mapping_id, version, approval_status,
-               standardized_header, domain, data_type,
-               valid_from, valid_to, changed_by, change_reason
-        FROM {MAPPINGS_TABLE}
-        WHERE mapping_id = {_esc(mapping_id)}
-        ORDER BY version
-        """
-    )
-    return pd.DataFrame(rows)
+def find_similar_canonicals(name: str, canonical_list: list[dict], threshold: float = 0.6) -> list[tuple[str, float]]:
+    similar = []
+    for canon in canonical_list:
+        sim = name_similarity(name, canon.get("canonical_name", ""))
+        if sim >= threshold:
+            similar.append((canon["canonical_name"], round(sim, 2)))
+    return sorted(similar, key=lambda x: x[1], reverse=True)
 
 
-# =========================================================================
-# STREAMLIT UI
-# =========================================================================
+def platform_badge_html(platform_id: str, count: int | None = None) -> str:
+    name = PLAT_NAMES.get(platform_id, platform_id)
+    cls = PLAT_BADGE_CLASS.get(platform_id, "badge-plat")
+    label = f"{name} {count}" if count is not None else name
+    return f'<span class="badge {cls}">{label}</span>'
 
-init_session_state()
+
+def confidence_badge_html(level: str) -> str:
+    cls_map = {"high": "badge-high", "medium": "badge-medium", "low": "badge-low"}
+    cls = cls_map.get((level or "").lower(), "badge-low")
+    return f'<span class="badge {cls}">{(level or "unknown").title()}</span>'
+
+
+def status_badge_html(status: str) -> str:
+    s = (status or "").lower()
+    cls_map = {"active": "badge-active", "pending": "badge-pending", "linked": "badge-linked"}
+    cls = cls_map.get(s, "badge-plat")
+    return f'<span class="badge {cls}">{(status or "unknown").title()}</span>'
+
+
+def build_cross_platform_context(canonical_id: str, approved: list[dict],
+                                  source_cols: list[dict]) -> dict[str, list[str]]:
+    col_lookup = {c["column_id"]: c for c in source_cols}
+    result: dict[str, list[str]] = {}
+    for m in approved:
+        if m.get("canonical_id") != canonical_id:
+            continue
+        col = col_lookup.get(m.get("column_id"), {})
+        pid = col.get("platform_id", "")
+        cname = col.get("column_name", "")
+        if pid and cname:
+            result.setdefault(pid, []).append(cname)
+    return result
+
+
+def generate_gold_view_sql(source_table: str, mappings: list[dict],
+                            source_cols: list[dict], canonical_list: list[dict],
+                            platform_id: str) -> str | None:
+    col_lookup = {c["column_id"]: c for c in source_cols}
+    canon_lookup = {c["canonical_id"]: c for c in canonical_list}
+
+    rename_pairs = []
+    for m in mappings:
+        col = col_lookup.get(m.get("column_id"), {})
+        canon = canon_lookup.get(m.get("canonical_id"), {})
+        if col.get("source_table") == source_table and col.get("column_name") and canon.get("canonical_name"):
+            rename_pairs.append((col["column_name"], canon["canonical_name"]))
+
+    if not rename_pairs:
+        return None
+
+    safe_name = source_table.split(".")[-1]
+    view_name = f"{GOLD_CATALOG}.{GOLD_SCHEMA}.{platform_id}__{safe_name}"
+
+    select_parts = [f"    `{orig}` AS `{canonical}`" for orig, canonical in rename_pairs]
+    select_clause = ",\n".join(select_parts)
+
+    return f"CREATE OR REPLACE VIEW {view_name} AS\nSELECT\n{select_clause}\nFROM {source_table}"
+
+
+# =====================================================================
+# SIDEBAR
+# =====================================================================
 
 try:
     current_user = get_current_user()
 except Exception:
     current_user = "unknown"
 
-pending_edits = st.session_state["pending_edits"]
+logo_path = os.path.join(os.path.dirname(__file__), "Citco.png")
+if os.path.isfile(logo_path):
+    st.sidebar.image(logo_path, width="stretch")
 
-# -- sidebar ---------------------------------------------------------------
-st.sidebar.markdown(f"**Signed in as:** `{current_user}`")
+st.sidebar.markdown(
+    '<div style="text-align:center; padding:0.5rem 0;">'
+    '<span style="font-size:0.95em; color:#555;">Column Mapper</span></div>',
+    unsafe_allow_html=True,
+)
+st.sidebar.divider()
+st.sidebar.caption(f"Signed in as **{current_user}**")
 st.sidebar.caption(f"`{CATALOG}`.`{SCHEMA}`")
+st.sidebar.caption(f"{len(PLATFORMS)} platforms configured")
+
 st.sidebar.divider()
 
-if pending_edits:
-    st.sidebar.warning(f"{len(pending_edits)} uncommitted edit(s)")
-    sb_c1, sb_c2 = st.sidebar.columns(2)
-    with sb_c1:
-        if st.button("Commit", type="primary", key="sb_commit"):
-            n = commit_edits()
-            st.toast(f"Committed {n} decision(s).")
-            st.rerun()
-    with sb_c2:
-        if st.button("Discard", key="sb_discard"):
-            discard_edits()
-            st.toast("Edits discarded.")
-            st.rerun()
-    st.sidebar.divider()
-
 if st.sidebar.button("Reload data"):
-    _invalidate_caches()
+    invalidate()
     st.rerun()
 
-# -- load data --------------------------------------------------------------
-try:
-    raw_df = get_mappings_df()
-    source_tables = get_source_tables()
-    canonical = get_canonical_columns()
-    rules_data = get_rules()
-except Exception as exc:
-    _tb = traceback.format_exc()
-    _log(f"data load failed: {exc}\n{_tb}")
-    st.error(f"Failed to load data: {exc}")
-    with st.expander("Debug info"):
-        st.code(_tb)
-    st.stop()
+# =====================================================================
+# TOP TAB NAVIGATION
+# =====================================================================
+tab_mapping, tab_master = st.tabs(["Data Mapping", "Master File Management"])
 
-display_df = apply_local_edits(raw_df)
+# =====================================================================
+# PAGE 1: DATA MAPPING WORK QUEUE
+# =====================================================================
+with tab_mapping:
+    st.markdown("## Data Mapping Work Queue")
+    st.caption(
+        "Discover source columns, run the AI mapping agent, then review and "
+        "approve proposals against the Master File."
+    )
 
-canonical_domains = sorted(set(
-    c.get("domain", "") for c in canonical if c.get("domain")
-))
-canonical_types = sorted(set(
-    c.get("expected_data_type", "") for c in canonical if c.get("expected_data_type")
-))
+    # Auto-discover columns on first visit
+    if "auto_discovered" not in st.session_state:
+        with st.spinner("Discovering source columns from platform schemas..."):
+            discover_source_columns()
+        invalidate()
+        st.session_state["auto_discovered"] = True
 
-# -- tabs -------------------------------------------------------------------
-tab_sources, tab_review, tab_canonical, tab_rules = st.tabs([
-    "Source Systems", "Review Mappings", "Canonical Map", "Rules",
-])
+    proposals = load_proposals()
+    source_cols = load_source_columns()
+    approved = load_approved_mappings()
+    canonical_raw = load_canonical()
 
-# =========================================================================
-# TAB 1: SOURCE SYSTEMS
-# =========================================================================
-with tab_sources:
-    st.header("Source Systems")
-    st.caption("Tables discovered in the catalog. Each source system's columns "
-               "are mapped to canonical concepts by the standardization pipeline.")
+    col_lookup = {c["column_id"]: c for c in source_cols}
+    canon_lookup = {c["canonical_id"]: c for c in canonical_raw}
 
-    source_names = set(r["table_name"] for r in source_tables)
-    mapped_sources = display_df["source_system"].unique()
+    pending = [p for p in proposals if p.get("status") == "pending_review"]
+    flagged = [p for p in proposals if p.get("status") == "flagged"]
+    approved_proposals = [p for p in proposals if p.get("status") == "approved"]
+    rejected_proposals = [p for p in proposals if p.get("status") == "rejected"]
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Source tables", len(source_tables))
-    m2.metric("Total source columns", sum(int(r["column_count"]) for r in source_tables))
-    m3.metric("Mapped columns", len(display_df))
-    approved_count = int((display_df["approval_status"] == "approved").sum())
-    m4.metric("Approved mappings", approved_count)
+    high_priority = [p for p in pending if (p.get("confidence_level") or "").lower() == "high"]
+    needs_discussion = [p for p in pending if (p.get("confidence_level") or "").lower() == "low"]
+    batch_ids = set(p.get("batch_id") for p in pending if p.get("batch_id"))
+
+    total_proposals = len(proposals)
+    total_approved = len(approved_proposals)
+    completion = (total_approved / total_proposals * 100) if total_proposals else 0
+
+    # -- Stats --
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Source Columns", len(source_cols))
+    s2.metric("Pending Review", len(pending))
+    s3.metric("Total Proposals", total_proposals)
+    s4.metric("Completion Rate", f"{completion:.0f}%")
 
     st.divider()
 
-    for tbl in source_tables:
-        tbl_name = tbl["table_name"]
-        col_count = int(tbl["column_count"])
+    # -- Platform Data Sources Overview --
+    st.markdown("### Platform Data Sources")
 
-        tbl_mappings = display_df[display_df["source_system"] == tbl_name]
-        mapped_count = len(tbl_mappings)
-        approved = int((tbl_mappings["approval_status"] == "approved").sum())
-        pending = int((tbl_mappings["approval_status"] == "pending_review").sum())
-        rejected = int((tbl_mappings["approval_status"] == "rejected").sum())
+    plat_col_counts: dict[str, dict] = {}
+    for c in source_cols:
+        pid = c.get("platform_id", "")
+        tbl = c.get("source_table", "").split(".")[-1] if c.get("source_table") else ""
+        plat_col_counts.setdefault(pid, {"columns": 0, "tables": set()})
+        plat_col_counts[pid]["columns"] += 1
+        if tbl:
+            plat_col_counts[pid]["tables"].add(tbl)
 
-        coverage = mapped_count / col_count if col_count > 0 else 0
-
-        with st.expander(
-            f"**{tbl_name}** -- {col_count} columns, "
-            f"{mapped_count} mapped ({coverage:.0%} coverage)",
-            expanded=False,
-        ):
-            sc1, sc2, sc3, sc4, sc5 = st.columns(5)
-            sc1.metric("Columns", col_count)
-            sc2.metric("Mapped", mapped_count)
-            sc3.metric("Approved", approved)
-            sc4.metric("Pending", pending)
-            sc5.metric("Rejected", rejected)
-
-            if not tbl_mappings.empty:
-                st.dataframe(
-                    tbl_mappings[["platform_header", "standardized_header",
-                                  "domain", "data_type", "confidence_score",
-                                  "approval_status"]].reset_index(drop=True),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-            else:
-                st.info("No mappings yet. Run the agentic mapping job to generate proposals.")
-
-
-# =========================================================================
-# TAB 2: REVIEW MAPPINGS
-# =========================================================================
-with tab_review:
-    st.header("Review Mappings")
-    st.caption(
-        "Filter, select, and approve or reject LLM-proposed column mappings. "
-        "Edits are staged locally until you commit."
-    )
-
-    # -- filters in columns instead of sidebar for this tab
-    fc1, fc2, fc3, fc4 = st.columns(4)
-
-    all_statuses = ["All"] + sorted(display_df["approval_status"].dropna().unique().tolist())
-    all_sources = ["All"] + sorted(display_df["source_system"].dropna().unique().tolist())
-    all_domains = ["All"] + sorted(display_df["domain"].dropna().unique().tolist())
-
-    status_filter = fc1.selectbox("Status", all_statuses, index=0, key="r_status")
-    source_filter = fc2.selectbox("Source system", all_sources, index=0, key="r_source")
-    domain_filter = fc3.selectbox("Domain", all_domains, index=0, key="r_domain")
-    min_confidence = fc4.slider("Min confidence", 0, 100, 0, key="r_conf")
-
-    filtered_df = display_df.copy()
-    if status_filter != "All":
-        filtered_df = filtered_df[filtered_df["approval_status"] == status_filter]
-    if source_filter != "All":
-        filtered_df = filtered_df[filtered_df["source_system"] == source_filter]
-    if domain_filter != "All":
-        filtered_df = filtered_df[filtered_df["domain"] == domain_filter]
-    filtered_df = filtered_df[filtered_df["confidence_score"] >= min_confidence]
-
-    rc1, rc2, rc3, rc4 = st.columns(4)
-    rc1.metric("Showing", len(filtered_df))
-    if len(filtered_df):
-        rc2.metric("Avg confidence", f"{filtered_df['confidence_score'].mean():.0f}")
-        rc3.metric("Pending review", int((filtered_df["approval_status"] == "pending_review").sum()))
-    rc4.metric("Uncommitted edits", len(pending_edits))
-
-    if filtered_df.empty:
-        st.info("No mappings match the current filters.")
+    if plat_col_counts:
+        plat_rows = []
+        for plat in PLATFORMS:
+            pid = plat["id"]
+            info = plat_col_counts.get(pid, {"columns": 0, "tables": set()})
+            proposed_for_plat = len([
+                p for p in proposals
+                if col_lookup.get(p.get("column_id"), {}).get("platform_id") == pid
+            ])
+            approved_for_plat = len([
+                m for m in approved
+                if next((c for c in source_cols if c["column_id"] == m.get("column_id")), {}).get("platform_id") == pid
+            ])
+            plat_rows.append({
+                "Platform": plat["name"],
+                "Description": plat.get("description", ""),
+                "Schema": f"{plat.get('source_catalog', CATALOG)}.{plat.get('source_schema', pid)}",
+                "Tables": ", ".join(sorted(info["tables"])) if info["tables"] else "--",
+                "Columns": info["columns"],
+                "Proposals": proposed_for_plat,
+                "Approved": approved_for_plat,
+            })
+        st.dataframe(pd.DataFrame(plat_rows), width="stretch", hide_index=True)
     else:
-        styled_df = filtered_df.reset_index(drop=True)
+        st.info("No source columns discovered. Click 'Discover Columns' to scan platform schemas.")
+
+    # -- Batch Mapping Controls --
+    bc1, bc2, bc3 = st.columns([1, 1, 3])
+    with bc1:
+        if st.button("Discover Columns", type="primary", key="discover_btn"):
+            with st.spinner("Scanning INFORMATION_SCHEMA..."):
+                new_count = discover_source_columns()
+            invalidate()
+            if new_count > 0:
+                st.toast(f"Discovered {new_count} new source column(s).")
+            else:
+                st.toast("No new columns found (all already discovered).")
+            st.rerun()
+    with bc2:
+        proposed_ids = {p.get("column_id") for p in proposals}
+        unmapped_for_agent = len([c for c in source_cols if c["column_id"] not in proposed_ids])
+        if st.button(
+            f"Run Mapping Agent ({unmapped_for_agent} unmapped)",
+            type="primary",
+            disabled=len(source_cols) == 0,
+            key="run_agent_btn",
+        ):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            with st.spinner("Running AI mapping agent..."):
+                written = run_batch_mapping(progress_bar=progress_bar, status_text=status_text)
+            invalidate()
+            progress_bar.empty()
+            status_text.empty()
+            if written > 0:
+                st.toast(f"Created {written} mapping proposal(s).")
+            else:
+                st.toast("No new proposals needed (all columns already have proposals).")
+            st.rerun()
+
+    st.divider()
+
+    # -- Filters --
+    fc1, fc2, fc3 = st.columns([1, 1, 2])
+    with fc1:
+        wq_plat = st.selectbox(
+            "Platform", ["All"] + PLAT_IDS,
+            format_func=lambda x: "All Platforms" if x == "All" else PLAT_NAMES.get(x, x),
+            key="wq_plat",
+        )
+    with fc2:
+        wq_status = st.selectbox(
+            "Status",
+            ["pending_review", "All", "flagged", "approved", "rejected"],
+            format_func=lambda x: x.replace("_", " ").title(),
+            key="wq_status",
+        )
+    with fc3:
+        wq_search = st.text_input(
+            "Search across headers, tables, notes...",
+            key="wq_search", placeholder="Search...",
+        )
+
+    # -- Filter proposals --
+    display_proposals = proposals if wq_status == "All" else [p for p in proposals if p.get("status") == wq_status]
+    if wq_plat != "All":
+        display_proposals = [
+            p for p in display_proposals
+            if col_lookup.get(p.get("column_id"), {}).get("platform_id") == wq_plat
+        ]
+    if wq_search:
+        q = wq_search.lower()
+        display_proposals = [
+            p for p in display_proposals
+            if q in (col_lookup.get(p.get("column_id"), {}).get("column_name", "")).lower()
+            or q in (col_lookup.get(p.get("column_id"), {}).get("source_table", "")).lower()
+            or q in (canon_lookup.get(p.get("suggested_canonical_id"), {}).get("canonical_name", "")).lower()
+            or q in (p.get("reasoning") or "").lower()
+        ]
+
+    if not display_proposals:
+        if total_proposals == 0 and len(source_cols) == 0:
+            st.info("No source columns discovered yet. Use 'Run Batch Mapping Job' above to get started.")
+        elif total_proposals == 0:
+            st.info("Source columns discovered but no proposals yet. Click 'Run Mapping Agent' above.")
+        else:
+            st.info("No proposals match the current filters.")
+    else:
+        rows = []
+        for p in display_proposals:
+            col = col_lookup.get(p.get("column_id"), {})
+            canon = canon_lookup.get(p.get("suggested_canonical_id"), {})
+
+            cross_plat = {}
+            if p.get("suggested_canonical_id"):
+                cross_plat = build_cross_platform_context(
+                    p["suggested_canonical_id"], approved, source_cols
+                )
+
+            row = {
+                "proposal_id": p.get("proposal_id", ""),
+                "Suggested Match": canon.get("canonical_name", p.get("suggested_canonical_name", "")),
+                "Confidence": p.get("confidence_level", "").title(),
+                "Header": col.get("column_name", ""),
+                "Platform": PLAT_NAMES.get(col.get("platform_id", ""), col.get("platform_id", "")),
+                "Source Table": (col.get("source_table", "").split(".")[-1] if col.get("source_table") else ""),
+                "Status": (p.get("status") or "").replace("_", " ").title(),
+            }
+            for pid in PLAT_IDS:
+                pname = PLAT_NAMES[pid]
+                mapped_cols = cross_plat.get(pid, [])
+                row[pname] = ", ".join(mapped_cols) if mapped_cols else ""
+
+            rows.append(row)
+
+        wq_df = pd.DataFrame(rows)
+
+        display_cols = ["Suggested Match", "Confidence", "Header", "Platform", "Source Table"]
+        platform_cols = [PLAT_NAMES[pid] for pid in PLAT_IDS]
+        display_cols += platform_cols
+        display_cols.append("Status")
+
+        show_cols = [c for c in display_cols if c in wq_df.columns]
+        show_df = wq_df[show_cols]
 
         event = st.dataframe(
-            styled_df,
-            use_container_width=True,
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="multi-row",
+            show_df, width="stretch", hide_index=True,
+            on_select="rerun", selection_mode="multi-row",
         )
+        sel_rows = event.selection.rows if event.selection else []
+        sel_proposal_ids = [wq_df.iloc[i]["proposal_id"] for i in sel_rows]
 
-        selected_indices = event.selection.rows if event.selection else []
-        selected_ids = [styled_df.iloc[i]["mapping_id"] for i in selected_indices]
-
-        # -- action buttons
-        if not selected_ids:
-            st.info("Select one or more rows above, then choose an action.")
-        else:
-            st.write(f"**{len(selected_ids)}** mapping(s) selected.")
-
-        act_c1, act_c2, act_c3, act_c4, _ = st.columns([1, 1, 1, 1, 3])
-
-        with act_c1:
-            if st.button("Approve", type="primary", disabled=not selected_ids, key="rv_approve"):
-                n = stage_status_change(selected_ids, "approved", current_user)
-                st.toast(f"Staged {n} approval(s).")
-                st.rerun()
-        with act_c2:
-            if st.button("Reject", disabled=not selected_ids, key="rv_reject"):
-                n = stage_status_change(selected_ids, "rejected", current_user)
-                st.toast(f"Staged {n} rejection(s).")
-                st.rerun()
-        with act_c3:
-            if st.button("Commit all", type="primary", disabled=not pending_edits, key="rv_commit"):
-                n = commit_edits()
-                st.toast(f"Committed {n} decision(s).")
-                st.rerun()
-        with act_c4:
-            if st.button("Discard all", disabled=not pending_edits, key="rv_discard"):
-                discard_edits()
-                st.toast("All edits discarded.")
-                st.rerun()
-
-        # -- edit single mapping
-        if len(selected_ids) == 1:
-            st.divider()
-            st.subheader("Edit mapping")
-
-            sel_row = styled_df[styled_df["mapping_id"] == selected_ids[0]].iloc[0]
-
-            edit_c1, edit_c2, edit_c3 = st.columns(3)
-
-            with edit_c1:
-                new_std = st.text_input(
-                    "Standardized header",
-                    value=sel_row["standardized_header"],
-                    key="edit_std_header",
-                )
-                if new_std != sel_row["standardized_header"]:
-                    stage_field_edit(selected_ids[0], "standardized_header", new_std, current_user)
-
-            with edit_c2:
-                domain_options = canonical_domains if canonical_domains else [sel_row["domain"]]
-                if sel_row["domain"] not in domain_options:
-                    domain_options = [sel_row["domain"]] + domain_options
-                domain_idx = (
-                    domain_options.index(sel_row["domain"])
-                    if sel_row["domain"] in domain_options else 0
-                )
-                new_domain = st.selectbox(
-                    "Domain", domain_options, index=domain_idx, key="edit_domain"
-                )
-                if new_domain != sel_row["domain"]:
-                    stage_field_edit(selected_ids[0], "domain", new_domain, current_user)
-
-            with edit_c3:
-                type_options = canonical_types if canonical_types else [sel_row["data_type"]]
-                if sel_row["data_type"] not in type_options:
-                    type_options = [sel_row["data_type"]] + type_options
-                type_idx = (
-                    type_options.index(sel_row["data_type"])
-                    if sel_row["data_type"] in type_options else 0
-                )
-                new_type = st.selectbox(
-                    "Data type", type_options, index=type_idx, key="edit_data_type"
-                )
-                if new_type != sel_row["data_type"]:
-                    stage_field_edit(selected_ids[0], "data_type", new_type, current_user)
-
-            detail_c1, detail_c2 = st.columns(2)
-
-            with detail_c1:
-                if FAISS_AVAILABLE:
-                    with st.expander("Similar approved mappings", expanded=True):
-                        similar = search_similar_mappings(sel_row["platform_header"], top_k=5)
-                        if not similar.empty:
-                            st.dataframe(
-                                similar[["platform_header", "standardized_header", "domain",
-                                         "data_type", "source_system", "similarity"]],
-                                use_container_width=True,
-                                hide_index=True,
-                            )
-                        else:
-                            st.info("No similar approved mappings found.")
-
-            with detail_c2:
-                with st.expander("Version history", expanded=True):
-                    hist_df = load_mapping_history(selected_ids[0])
-                    if not hist_df.empty:
-                        st.dataframe(hist_df, use_container_width=True, hide_index=True)
-                    else:
-                        st.info("No history found.")
-
-    # -- pending edits summary
-    if pending_edits:
-        st.divider()
-        st.subheader("Pending edits (uncommitted)")
-        display_edits = [
-            {k: v for k, v in edit.items() if not k.startswith("_")}
-            for edit in pending_edits.values()
-        ]
-        st.dataframe(pd.DataFrame(display_edits), use_container_width=True, hide_index=True)
-
-
-# =========================================================================
-# TAB 3: CANONICAL MAP
-# =========================================================================
-with tab_canonical:
-    st.header("Canonical Map")
-    st.caption(
-        "Cross-system view: for every canonical concept, which source systems "
-        "have a column that maps to it and what do they call it?"
-    )
-
-    approved_df = display_df[display_df["approval_status"] == "approved"]
-
-    if approved_df.empty:
-        st.info("No approved mappings yet. Approve some mappings in the Review tab first.")
-    else:
-        # Build the pivot: canonical_name x source_system -> platform_header
-        canon_df = pd.DataFrame(canonical)
-        pivot_data = approved_df[["source_system", "platform_header", "standardized_header"]].copy()
-        pivot_data = pivot_data.rename(columns={"standardized_header": "canonical_name"})
-
-        all_systems = sorted(pivot_data["source_system"].unique())
-
-        # Domain filter for canonical map
-        cm_domain_filter = st.selectbox(
-            "Filter by domain", ["All"] + canonical_domains, index=0, key="cm_domain"
-        )
-
-        canon_names = canon_df["canonical_name"].tolist()
-        if cm_domain_filter != "All":
-            canon_names = canon_df[canon_df["domain"] == cm_domain_filter]["canonical_name"].tolist()
-
-        pivot_rows = []
-        for cn in canon_names:
-            cn_info = canon_df[canon_df["canonical_name"] == cn]
-            row = {
-                "canonical_name": cn,
-                "domain": cn_info.iloc[0]["domain"] if not cn_info.empty else "",
-                "data_type": cn_info.iloc[0]["expected_data_type"] if not cn_info.empty else "",
-            }
-            cn_mappings = pivot_data[pivot_data["canonical_name"] == cn]
-            for sys_name in all_systems:
-                sys_cols = cn_mappings[cn_mappings["source_system"] == sys_name]["platform_header"]
-                row[sys_name] = ", ".join(sys_cols.tolist()) if not sys_cols.empty else ""
-            system_count = sum(1 for s in all_systems if row.get(s, ""))
-            row["systems"] = system_count
-            pivot_rows.append(row)
-
-        # Also add canonical names that exist only in mappings (not in canonical table)
-        mapped_canonicals = set(pivot_data["canonical_name"].unique())
-        known_canonicals = set(canon_df["canonical_name"].tolist())
-        for cn in sorted(mapped_canonicals - known_canonicals):
-            row = {"canonical_name": cn, "domain": "", "data_type": "", "systems": 0}
-            cn_mappings = pivot_data[pivot_data["canonical_name"] == cn]
-            for sys_name in all_systems:
-                sys_cols = cn_mappings[cn_mappings["source_system"] == sys_name]["platform_header"]
-                row[sys_name] = ", ".join(sys_cols.tolist()) if not sys_cols.empty else ""
-            row["systems"] = sum(1 for s in all_systems if row.get(s, ""))
-            if cm_domain_filter == "All":
-                pivot_rows.append(row)
-
-        if pivot_rows:
-            pivot_df = pd.DataFrame(pivot_rows)
-            ordered_cols = ["canonical_name", "domain", "data_type", "systems"] + all_systems
-            pivot_df = pivot_df[[c for c in ordered_cols if c in pivot_df.columns]]
-            pivot_df = pivot_df.sort_values(["systems", "canonical_name"], ascending=[False, True])
-
-            cm1, cm2, cm3 = st.columns(3)
-            cm1.metric("Canonical concepts", len(pivot_df))
-            cm2.metric("Source systems", len(all_systems))
-            multi_system = int((pivot_df["systems"] >= 2).sum())
-            cm3.metric("Cross-system concepts", multi_system)
-
-            st.dataframe(
-                pivot_df.reset_index(drop=True),
-                use_container_width=True,
-                hide_index=True,
-                height=600,
+        if sel_proposal_ids:
+            st.markdown(
+                f'<div style="background:#1B2A4A; color:white; padding:8px 16px; '
+                f'border-radius:6px; margin:8px 0;">'
+                f'<strong>{len(sel_proposal_ids)} item(s) selected</strong></div>',
+                unsafe_allow_html=True,
             )
-        else:
-            st.info("No canonical concepts match the current filter.")
+
+        ac1, ac2, ac3, ac4 = st.columns([1, 1, 1, 4])
+        with ac1:
+            if st.button("Approve Selected", type="primary", disabled=not sel_proposal_ids, key="wq_approve"):
+                for pid in sel_proposal_ids:
+                    prop = next((p for p in display_proposals if p["proposal_id"] == pid), None)
+                    if not prop or not prop.get("suggested_canonical_id"):
+                        continue
+                    mid = uuid.uuid4().hex[:12]
+                    run_stmt(
+                        f"INSERT INTO {T_APPROVED} "
+                        f"(mapping_id, column_id, canonical_id, proposal_id, approved_by, approved_at) "
+                        f"VALUES ({_esc(mid)}, {_esc(prop['column_id'])}, "
+                        f"{_esc(prop['suggested_canonical_id'])}, {_esc(pid)}, "
+                        f"{_esc(current_user)}, current_timestamp())"
+                    )
+                    run_stmt(
+                        f"UPDATE {T_PROPOSALS} SET status = 'approved', "
+                        f"reviewed_at = current_timestamp(), reviewed_by = {_esc(current_user)} "
+                        f"WHERE proposal_id = {_esc(pid)}"
+                    )
+                    log_audit("mapping", mid, "approved", current_user,
+                              {"canonical_id": prop["suggested_canonical_id"], "column_id": prop["column_id"]})
+                invalidate()
+                st.toast(f"Approved {len(sel_proposal_ids)} mapping(s).")
+                st.rerun()
+        with ac2:
+            if st.button("Flag for Discussion", disabled=not sel_proposal_ids, key="wq_flag"):
+                for pid in sel_proposal_ids:
+                    run_stmt(
+                        f"UPDATE {T_PROPOSALS} SET status = 'flagged' "
+                        f"WHERE proposal_id = {_esc(pid)}"
+                    )
+                    log_audit("proposal", pid, "flagged", current_user)
+                invalidate()
+                st.toast(f"Flagged {len(sel_proposal_ids)} item(s) for discussion.")
+                st.rerun()
+        with ac3:
+            if st.button("Reject Selected", disabled=not sel_proposal_ids, key="wq_reject"):
+                for pid in sel_proposal_ids:
+                    run_stmt(
+                        f"UPDATE {T_PROPOSALS} SET status = 'rejected', "
+                        f"reviewed_at = current_timestamp(), reviewed_by = {_esc(current_user)} "
+                        f"WHERE proposal_id = {_esc(pid)}"
+                    )
+                    log_audit("proposal", pid, "rejected", current_user)
+                invalidate()
+                st.toast(f"Rejected {len(sel_proposal_ids)} item(s).")
+                st.rerun()
+
+        # -- Detail panel for single selection --
+        if len(sel_proposal_ids) == 1:
+            sel_prop = next((p for p in display_proposals if p["proposal_id"] == sel_proposal_ids[0]), None)
+            if sel_prop:
+                sel_col = col_lookup.get(sel_prop.get("column_id"), {})
+                sel_canon = canon_lookup.get(sel_prop.get("suggested_canonical_id"), {})
+
+                st.divider()
+                st.markdown("### Proposal Detail")
+
+                dc1, dc2, dc3 = st.columns(3)
+                dc1.markdown(f"**Source:** `{sel_col.get('column_name', 'N/A')}` from `{sel_col.get('source_table', 'N/A')}`")
+                dc2.markdown(f"**Suggested Match:** `{sel_canon.get('canonical_name', sel_prop.get('suggested_canonical_name', 'N/A'))}`")
+                try:
+                    conf_val = float(sel_prop.get('confidence', 0))
+                except (TypeError, ValueError):
+                    conf_val = 0
+                dc3.markdown(f"**Confidence:** {sel_prop.get('confidence_level', 'N/A').title()} ({conf_val:.0f}%)")
+
+                if sel_prop.get("reasoning"):
+                    st.markdown(f"**Agent Reasoning:** {sel_prop['reasoning']}")
+
+                st.markdown("#### Reassign to a different canonical field")
+                canon_options = {c["canonical_id"]: c["canonical_name"] for c in canonical_raw}
+                default_cid = sel_prop.get("suggested_canonical_id")
+                cid_list = list(canon_options.keys())
+                default_idx = cid_list.index(default_cid) if default_cid in cid_list else 0
+
+                chosen_cid = st.selectbox(
+                    "Canonical field",
+                    cid_list,
+                    index=default_idx if cid_list else 0,
+                    format_func=lambda x: canon_options.get(x, x),
+                    key="wq_reassign",
+                ) if cid_list else None
+
+                rc1, rc2 = st.columns([1, 4])
+                with rc1:
+                    if chosen_cid and st.button("Approve with Selection", type="primary", key="wq_approve_reassign"):
+                        mid = uuid.uuid4().hex[:12]
+                        run_stmt(
+                            f"INSERT INTO {T_APPROVED} "
+                            f"(mapping_id, column_id, canonical_id, proposal_id, approved_by, approved_at) "
+                            f"VALUES ({_esc(mid)}, {_esc(sel_prop['column_id'])}, "
+                            f"{_esc(chosen_cid)}, {_esc(sel_prop['proposal_id'])}, "
+                            f"{_esc(current_user)}, current_timestamp())"
+                        )
+                        run_stmt(
+                            f"UPDATE {T_PROPOSALS} SET status = 'approved', "
+                            f"reviewed_at = current_timestamp(), reviewed_by = {_esc(current_user)} "
+                            f"WHERE proposal_id = {_esc(sel_prop['proposal_id'])}"
+                        )
+                        reassigned = chosen_cid != default_cid
+                        log_audit("mapping", mid, "approved", current_user,
+                                  {"canonical_id": chosen_cid, "reassigned": reassigned})
+                        invalidate()
+                        st.toast("Approved" + (" (reassigned)" if reassigned else "") + ".")
+                        st.rerun()
+
+                st.divider()
+                st.markdown("#### Create New Master Entry")
+                st.caption("If no existing canonical field is a good match, create a new one.")
+
+                nc1, nc2, nc3 = st.columns(3)
+                with nc1:
+                    new_name = st.text_input("Name", value=sel_col.get("column_name", "").lower().replace(" ", "_"), key="wq_new_name")
+                with nc2:
+                    new_type = st.selectbox("Type", ["string", "integer", "decimal", "date", "timestamp", "boolean"], key="wq_new_type")
+                with nc3:
+                    new_domain = st.selectbox("Domain", ["Financial", "Identity", "Temporal", "Operational", "Geographic", "Reference", "Organizational"], key="wq_new_domain")
+                new_def = st.text_input("Business definition", key="wq_new_def")
+
+                if new_name and canonical_raw:
+                    similar = find_similar_canonicals(new_name, canonical_raw, threshold=0.6)
+                    if similar:
+                        st.warning("Similar entries exist: " + ", ".join(f"**{s[0]}** ({s[1]:.0%})" for s in similar[:5]))
+
+                if st.button("Create and Link", type="primary", disabled=not new_name, key="wq_create_link"):
+                    cid = uuid.uuid4().hex[:12]
+                    run_stmt(
+                        f"INSERT INTO {T_CANONICAL} "
+                        f"(canonical_id, canonical_name, data_type, business_definition, "
+                        f"domain_category, is_active, created_by, created_at, updated_at) "
+                        f"VALUES ({_esc(cid)}, {_esc(new_name)}, {_esc(new_type)}, "
+                        f"{_esc(new_def)}, {_esc(new_domain)}, true, "
+                        f"{_esc(current_user)}, current_timestamp(), current_timestamp())"
+                    )
+                    log_audit("canonical", cid, "created", current_user, {"name": new_name})
+
+                    mid = uuid.uuid4().hex[:12]
+                    run_stmt(
+                        f"INSERT INTO {T_APPROVED} "
+                        f"(mapping_id, column_id, canonical_id, proposal_id, approved_by, approved_at) "
+                        f"VALUES ({_esc(mid)}, {_esc(sel_prop['column_id'])}, "
+                        f"{_esc(cid)}, {_esc(sel_prop['proposal_id'])}, "
+                        f"{_esc(current_user)}, current_timestamp())"
+                    )
+                    run_stmt(
+                        f"UPDATE {T_PROPOSALS} SET status = 'approved', "
+                        f"reviewed_at = current_timestamp(), reviewed_by = {_esc(current_user)} "
+                        f"WHERE proposal_id = {_esc(sel_prop['proposal_id'])}"
+                    )
+                    log_audit("mapping", mid, "approved", current_user,
+                              {"canonical_id": cid, "new_entry": True})
+                    invalidate()
+                    st.toast(f"Created '{new_name}' and linked mapping.")
+                    st.rerun()
 
 
-# =========================================================================
-# TAB 4: RULES
-# =========================================================================
-with tab_rules:
-    st.header("Rules")
+# =====================================================================
+# PAGE 2: MASTER FILE MANAGEMENT
+# =====================================================================
+with tab_master:
+    st.markdown("## Master File Management")
     st.caption(
-        "Naming rules constrain LLM proposals. Abbreviation rules, naming conventions, "
-        "domain classifications, and data type mappings."
+        "Manage standardized master entries that serve as the canonical reference "
+        "for data mapping across all platforms."
     )
 
-    if rules_data:
-        rules_df = pd.DataFrame(rules_data)
+    canonical_raw = load_canonical()
+    approved = load_approved_mappings()
+    source_cols = load_source_columns()
 
-        rule_type_filter = st.selectbox(
-            "Filter by type",
-            ["All"] + sorted(rules_df["rule_type"].unique().tolist()),
-            key="rules_type_filter",
-        )
-        if rule_type_filter != "All":
-            rules_df = rules_df[rules_df["rule_type"] == rule_type_filter]
+    mapped_column_ids = {m.get("column_id") for m in approved}
+    total_source_cols = len(source_cols)
+    mapped_count = sum(1 for c in source_cols if c["column_id"] in mapped_column_ids)
+    unmapped_count = total_source_cols - mapped_count
+    coverage = (mapped_count / total_source_cols * 100) if total_source_cols else 0
 
-        rm1, rm2, rm3, rm4 = st.columns(4)
-        rm1.metric("Total rules", len(rules_df))
-        for i, rt in enumerate(["abbreviation", "naming_convention", "domain", "data_type"]):
-            count = int((rules_df["rule_type"] == rt).sum()) if not rules_df.empty else 0
-            [rm2, rm3, rm4, rm1][i].metric(rt.replace("_", " ").title(), count)
-
-        st.dataframe(
-            rules_df[["rule_id", "rule_type", "rule_key", "rule_value",
-                       "rule_description", "examples"]].reset_index(drop=True),
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.info("No active rules found.")
+    ms1, ms2, ms3, ms4 = st.columns(4)
+    ms1.metric("Active Master Entries", len(canonical_raw))
+    ms2.metric("Total Mappings", len(approved))
+    ms3.metric("Unmapped Headers", unmapped_count)
+    ms4.metric("Coverage", f"{coverage:.1f}%")
 
     st.divider()
-    st.subheader("Add a rule")
 
-    rule_types = ["abbreviation", "naming_convention", "domain", "data_type"]
+    # -- Filters --
+    mf1, mf2, mf3 = st.columns([2, 1, 1])
+    with mf1:
+        mf_search = st.text_input("Search master entries...", key="mf_search")
+    with mf2:
+        domains = sorted(set(c.get("domain_category", "") for c in canonical_raw if c.get("domain_category")))
+        mf_domain = st.selectbox("Domain", ["All"] + domains, key="mf_domain")
+    with mf3:
+        mf_status = st.selectbox("Status", ["All Status", "Active"], key="mf_status")
 
-    ar_c1, ar_c2 = st.columns(2)
-    with ar_c1:
-        new_rule_type = st.selectbox("Rule type", rule_types, key="new_rule_type")
-        new_rule_key = st.text_input("Key", key="new_rule_key",
-                                     placeholder="e.g. acct, mgr, amt")
-    with ar_c2:
-        new_rule_value = st.text_input("Value", key="new_rule_value",
-                                       placeholder="e.g. account, mgr, amt")
-        new_rule_desc = st.text_input("Description", key="new_rule_desc",
-                                      placeholder="e.g. Expand acct to account")
+    canon_display = canonical_raw
+    if mf_search:
+        q = mf_search.lower()
+        canon_display = [
+            c for c in canon_display
+            if q in c.get("canonical_name", "").lower()
+            or q in (c.get("business_definition") or "").lower()
+        ]
+    if mf_domain != "All":
+        canon_display = [c for c in canon_display if c.get("domain_category") == mf_domain]
 
-    new_rule_examples = st.text_input("Examples", key="new_rule_examples",
-                                      placeholder="e.g. Acct-ID -> account_id")
+    # -- Build platform coverage per canonical field --
+    canon_coverage = {}
+    for m in approved:
+        cid = m.get("canonical_id")
+        col = next((c for c in source_cols if c["column_id"] == m.get("column_id")), None)
+        if col:
+            canon_coverage.setdefault(cid, {}).setdefault(col["platform_id"], []).append(col["column_name"])
 
-    can_add = all([new_rule_key, new_rule_value, new_rule_desc])
-    if st.button("Add rule", type="primary", disabled=not can_add, key="btn_add_rule"):
-        rid = insert_rule(
-            new_rule_type, new_rule_key, new_rule_value,
-            new_rule_desc, new_rule_examples or ""
+    # -- Action buttons --
+    btn1, btn2, btn3 = st.columns([6, 1, 1])
+    with btn2:
+        show_create = st.button("Create Master Entry", key="show_create_btn")
+    with btn3:
+        show_report = st.button("Generate Report", key="gen_report_btn")
+
+    if show_report:
+        report_data = []
+        for c in canonical_raw:
+            plat_cov = canon_coverage.get(c["canonical_id"], {})
+            report_data.append({
+                "Canonical Name": c.get("canonical_name", ""),
+                "Data Type": c.get("data_type", ""),
+                "Domain": c.get("domain_category", ""),
+                "Definition": c.get("business_definition", ""),
+                "Platforms Covered": len(plat_cov),
+                "Total Mappings": sum(len(v) for v in plat_cov.values()),
+            })
+        st.download_button(
+            "Download CSV Report",
+            pd.DataFrame(report_data).to_csv(index=False),
+            "master_file_report.csv",
+            "text/csv",
         )
-        st.toast(f"Added rule {rid}.")
-        st.rerun()
+
+    if show_create:
+        with st.container():
+            st.markdown("#### New Master Entry")
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                cn_name = st.text_input("Standardized Name", key="cn_name", placeholder="e.g. fund_identifier")
+                cn_type = st.selectbox("Data Type", ["string", "integer", "decimal", "date", "timestamp", "boolean"], key="cn_type")
+            with cc2:
+                cn_domain = st.selectbox("Domain", ["Financial", "Identity", "Temporal", "Operational", "Geographic", "Reference", "Organizational"], key="cn_domain")
+                cn_def = st.text_input("Business Definition", key="cn_def", placeholder="Unique identifier for a fund entity")
+
+            if cn_name and canonical_raw:
+                similar = find_similar_canonicals(cn_name, canonical_raw, threshold=0.6)
+                if similar:
+                    st.warning("Similar existing entries: " + ", ".join(f"**{s[0]}** ({s[1]:.0%})" for s in similar[:5]))
+
+            if st.button("Create Entry", type="primary", disabled=not cn_name, key="cn_create"):
+                cid = uuid.uuid4().hex[:12]
+                run_stmt(
+                    f"INSERT INTO {T_CANONICAL} "
+                    f"(canonical_id, canonical_name, data_type, business_definition, "
+                    f"domain_category, is_active, created_by, created_at, updated_at) "
+                    f"VALUES ({_esc(cid)}, {_esc(cn_name)}, {_esc(cn_type)}, "
+                    f"{_esc(cn_def)}, {_esc(cn_domain)}, true, "
+                    f"{_esc(current_user)}, current_timestamp(), current_timestamp())"
+                )
+                log_audit("canonical", cid, "created", current_user, {"name": cn_name})
+                invalidate()
+                st.toast(f"Created: {cn_name}")
+                st.rerun()
+
+    if not canon_display:
+        st.info("No master entries found. Create one or wait for batch proposals to be approved.")
+    else:
+        master_rows = []
+        for c in canon_display:
+            cid = c["canonical_id"]
+            plat_cov = canon_coverage.get(cid, {})
+            mapped_headers = sum(len(v) for v in plat_cov.values())
+            coverage_text = ", ".join(
+                f"{PLAT_NAMES[pid]}({len(cols)})" for pid in PLAT_IDS if pid in plat_cov
+            ) if plat_cov else "--"
+
+            master_rows.append({
+                "canonical_id": cid,
+                "Standardized Name": c.get("canonical_name", ""),
+                "Business Definition": (c.get("business_definition") or "")[:100],
+                "Platform Coverage": coverage_text,
+                "Mapped Headers": mapped_headers,
+                "Domain Category": c.get("domain_category", ""),
+                "Data Type": c.get("data_type", ""),
+                "Status": "Active",
+            })
+
+        master_df = pd.DataFrame(master_rows)
+
+        show_master_cols = [c for c in ["Standardized Name", "Business Definition", "Platform Coverage",
+                                         "Mapped Headers", "Domain Category", "Data Type", "Status"]
+                           if c in master_df.columns]
+
+        master_event = st.dataframe(
+            master_df[show_master_cols], width="stretch", hide_index=True,
+            on_select="rerun", selection_mode="single-row",
+        )
+        master_sel = master_event.selection.rows if master_event.selection else []
+
+        # -- Drill-down --
+        if master_sel:
+            sel_canon_id = master_df.iloc[master_sel[0]]["canonical_id"]
+            sel_canon = next((c for c in canonical_raw if c["canonical_id"] == sel_canon_id), None)
+
+            if sel_canon:
+                st.divider()
+
+                plat_cov = canon_coverage.get(sel_canon_id, {})
+                total_plats = len(PLATFORMS)
+                covered_plats = len(plat_cov)
+                total_mapped = sum(len(v) for v in plat_cov.values())
+                linked_count = sum(
+                    1 for m in approved if m.get("canonical_id") == sel_canon_id
+                )
+                pending_count = sum(
+                    1 for p in load_proposals()
+                    if p.get("suggested_canonical_id") == sel_canon_id
+                    and p.get("status") == "pending_review"
+                )
+
+                header_badges = " ".join(
+                    platform_badge_html(pid, len(cols))
+                    for pid in PLAT_IDS if pid in plat_cov
+                )
+                st.markdown(
+                    f'<h3 style="margin-bottom:0;">{sel_canon["canonical_name"]}'
+                    f'</h3>'
+                    f'<div style="margin-top:4px;">{header_badges}</div>'
+                    if header_badges else
+                    f'<h3>{sel_canon["canonical_name"]}</h3>',
+                    unsafe_allow_html=True,
+                )
+
+                if sel_canon.get("business_definition"):
+                    st.caption(sel_canon["business_definition"])
+
+                dc1, dc2, dc3, dc4 = st.columns(4)
+                dc1.metric("Platform Coverage", f"{covered_plats}/{total_plats}")
+                dc2.metric("Total Mappings", total_mapped)
+                dc3.metric("Data Type", sel_canon.get("data_type", "N/A"))
+                status_parts = []
+                if linked_count:
+                    status_parts.append(f"{linked_count} Linked")
+                if pending_count:
+                    status_parts.append(f"{pending_count} Pending")
+                dc4.metric("Status", ", ".join(status_parts) if status_parts else "No mappings")
+
+                if plat_cov:
+                    plat_tabs = st.tabs([
+                        f"{PLAT_NAMES.get(pid, pid)} ({len(cols)})"
+                        for pid, cols in plat_cov.items()
+                    ])
+                    for tab, (pid, col_names) in zip(plat_tabs, plat_cov.items()):
+                        with tab:
+                            st.markdown(
+                                f"Showing {len(col_names)} mapping(s) for "
+                                f"{platform_badge_html(pid)}",
+                                unsafe_allow_html=True,
+                            )
+                            for m in approved:
+                                if m.get("canonical_id") != sel_canon_id:
+                                    continue
+                                col = next((c for c in source_cols if c["column_id"] == m.get("column_id")), None)
+                                if col and col.get("platform_id") == pid:
+                                    with st.container(border=True):
+                                        mc1, mc2 = st.columns([3, 1])
+                                        with mc1:
+                                            st.markdown(
+                                                f'**`{col.get("column_name", "")}`** &rarr; '
+                                                f'`{sel_canon["canonical_name"]}`'
+                                            )
+                                        with mc2:
+                                            st.markdown(
+                                                '<span class="badge badge-linked">Linked</span>',
+                                                unsafe_allow_html=True,
+                                            )
+                                        mc3, mc4 = st.columns(2)
+                                        with mc3:
+                                            st.caption(f"Source Table: **{col.get('source_table', '').split('.')[-1]}**")
+                                        with mc4:
+                                            st.caption(f"Approved By: **{m.get('approved_by', 'N/A')}**")
+
+                            pending_for_plat = [
+                                p for p in load_proposals()
+                                if p.get("suggested_canonical_id") == sel_canon_id
+                                and p.get("status") == "pending_review"
+                                and (next((c for c in source_cols if c["column_id"] == p.get("column_id")), {})
+                                     .get("platform_id") == pid)
+                            ]
+                            for p in pending_for_plat:
+                                pcol = next((c for c in source_cols if c["column_id"] == p.get("column_id")), {})
+                                with st.container(border=True):
+                                    mc1, mc2 = st.columns([3, 1])
+                                    with mc1:
+                                        st.markdown(
+                                            f'**`{pcol.get("column_name", "")}`** &rarr; '
+                                            f'`{sel_canon["canonical_name"]}`'
+                                        )
+                                    with mc2:
+                                        st.markdown(
+                                            '<span class="badge badge-pending">Pending</span>',
+                                            unsafe_allow_html=True,
+                                        )
+                                    mc3, mc4 = st.columns(2)
+                                    with mc3:
+                                        st.caption(f"Source Table: **{pcol.get('source_table', '').split('.')[-1]}**")
+                                    with mc4:
+                                        conf = p.get("confidence_level", "N/A").title()
+                                        st.caption(f"Match Confidence: **{conf}**")
+                else:
+                    st.info("No platform mappings yet for this canonical field.")
+
+    # -- Generate Gold Views --
+    st.divider()
+    st.markdown("### Generate Gold Views")
+    st.caption(
+        f"Generate SQL views in `{GOLD_CATALOG}`.`{GOLD_SCHEMA}` that rename source "
+        f"columns to their canonical names."
+    )
+
+    if not approved:
+        st.info("Approve mappings in the Data Mapping page to generate gold views.")
+    else:
+        tables_with_mappings: dict[str, dict] = {}
+        for m in approved:
+            col = next((c for c in source_cols if c["column_id"] == m.get("column_id")), None)
+            if col and col.get("source_table"):
+                key = col["source_table"]
+                tables_with_mappings.setdefault(key, {
+                    "platform_id": col["platform_id"],
+                    "table": key,
+                    "mappings": [],
+                })
+                canon = next((c for c in canonical_raw if c["canonical_id"] == m.get("canonical_id")), {})
+                tables_with_mappings[key]["mappings"].append({
+                    "column": col["column_name"],
+                    "canonical": canon.get("canonical_name", "?"),
+                })
+
+        if tables_with_mappings:
+            gold_rows = []
+            for tbl, info in tables_with_mappings.items():
+                gold_rows.append({
+                    "Source Table": tbl.split(".")[-1],
+                    "Platform": PLAT_NAMES.get(info["platform_id"], info["platform_id"]),
+                    "Mapped Columns": len(info["mappings"]),
+                    "Column Renames": ", ".join(f"{m['column']} -> {m['canonical']}" for m in info["mappings"][:3])
+                                     + ("..." if len(info["mappings"]) > 3 else ""),
+                })
+            st.dataframe(pd.DataFrame(gold_rows), width="stretch", hide_index=True)
+
+            gc1, gc2, gc3 = st.columns([1, 1, 5])
+            with gc1:
+                if st.button("Preview SQL", key="preview_gold"):
+                    for tbl, info in tables_with_mappings.items():
+                        sql = generate_gold_view_sql(tbl, approved, source_cols, canonical_raw, info["platform_id"])
+                        if sql:
+                            st.code(sql, language="sql")
+            with gc2:
+                if st.button("Execute Gold Views", type="primary", key="exec_gold"):
+                    created = 0
+                    for tbl, info in tables_with_mappings.items():
+                        sql = generate_gold_view_sql(tbl, approved, source_cols, canonical_raw, info["platform_id"])
+                        if sql:
+                            try:
+                                run_stmt(sql)
+                                created += 1
+                            except Exception as exc:
+                                st.error(f"Failed to create view for {tbl}: {exc}")
+                    if created:
+                        log_audit("gold_views", "batch", "created", current_user, {"count": created})
+                        st.toast(f"Created {created} gold view(s).")
+
+    # -- Standardization Rules --
+    st.divider()
+    with st.expander("Standardization Rules"):
+        st.caption("Abbreviation rules used by the batch agent during column standardization.")
+        rules = load_rules()
+        if rules:
+            rules_df = pd.DataFrame(rules)
+            display_cols = [c for c in ["rule_id", "rule_type", "pattern", "replacement", "description", "is_active"]
+                           if c in rules_df.columns]
+            st.dataframe(rules_df[display_cols], width="stretch", hide_index=True, height=300)
+        else:
+            st.info("No rules configured yet.")
+
+        st.markdown("**Add a rule**")
+        rc1, rc2 = st.columns(2)
+        with rc1:
+            new_pattern = st.text_input("Pattern (abbreviation)", key="rule_pattern")
+            new_replacement = st.text_input("Replacement", key="rule_repl")
+        with rc2:
+            new_rule_desc = st.text_input("Description", key="rule_desc")
+        if st.button("Add Rule", type="primary", disabled=not (new_pattern and new_replacement), key="add_rule"):
+            rid = uuid.uuid4().hex[:12]
+            run_stmt(
+                f"INSERT INTO {T_RULES} "
+                f"(rule_id, rule_type, pattern, replacement, description, is_active) "
+                f"VALUES ({_esc(rid)}, 'abbreviation', {_esc(new_pattern)}, "
+                f"{_esc(new_replacement)}, {_esc(new_rule_desc)}, true)"
+            )
+            log_audit("rule", rid, "created", current_user,
+                      {"pattern": new_pattern, "replacement": new_replacement})
+            invalidate()
+            st.toast(f"Rule added: {new_pattern} -> {new_replacement}")
+            st.rerun()
+
+    # -- Audit Log --
+    st.divider()
+    with st.expander("Audit Log"):
+        st.caption(
+            "Every proposal, approval, rejection, and edit is recorded here."
+        )
+
+        audit_raw = load_audit()
+        if audit_raw:
+            adf = pd.DataFrame(audit_raw)
+            f1, f2, f3 = st.columns(3)
+            with f1:
+                aud_entity = st.selectbox(
+                    "Entity", ["All"] + sorted(adf["entity_type"].dropna().unique().tolist()), key="ae"
+                )
+            with f2:
+                aud_action = st.selectbox(
+                    "Action", ["All"] + sorted(adf["action"].dropna().unique().tolist()), key="aa"
+                )
+            with f3:
+                aud_actor = st.selectbox(
+                    "Actor", ["All"] + sorted(adf["actor"].dropna().unique().tolist()), key="ac"
+                )
+
+            if aud_entity != "All":
+                adf = adf[adf["entity_type"] == aud_entity]
+            if aud_action != "All":
+                adf = adf[adf["action"] == aud_action]
+            if aud_actor != "All":
+                adf = adf[adf["actor"] == aud_actor]
+
+            am1, am2, am3 = st.columns(3)
+            am1.metric("Events", len(adf))
+            if not adf.empty:
+                am2.metric("Unique Actors", adf["actor"].nunique())
+                am3.metric("Entity Types", adf["entity_type"].nunique())
+
+            cols = [c for c in ["created_at", "entity_type", "entity_id", "action", "actor", "details"]
+                    if c in adf.columns]
+            st.dataframe(adf[cols].reset_index(drop=True), width="stretch", hide_index=True, height=500)
+        else:
+            st.info("No audit events recorded yet.")
+
 
 _log("render complete")

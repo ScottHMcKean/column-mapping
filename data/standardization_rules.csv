@@ -1,0 +1,23 @@
+rule_id,rule_type,pattern,replacement,description,is_active
+rule_001,abbreviation,acct,account,Account abbreviation,TRUE
+rule_002,abbreviation,amt,amount,Amount abbreviation,TRUE
+rule_003,abbreviation,bal,balance,Balance abbreviation,TRUE
+rule_004,abbreviation,ccy,currency,Currency abbreviation,TRUE
+rule_005,abbreviation,cust,customer,Customer abbreviation,TRUE
+rule_006,abbreviation,desc,description,Description abbreviation,TRUE
+rule_007,abbreviation,dt,date,Date abbreviation,TRUE
+rule_008,abbreviation,fnd,fund,Fund abbreviation,TRUE
+rule_009,abbreviation,inv,investor,Investor abbreviation,TRUE
+rule_010,abbreviation,mgr,manager,Manager abbreviation,TRUE
+rule_011,abbreviation,mkt,market,Market abbreviation,TRUE
+rule_012,abbreviation,nav,net_asset_value,NAV abbreviation,TRUE
+rule_013,abbreviation,num,number,Number abbreviation,TRUE
+rule_014,abbreviation,perf,performance,Performance abbreviation,TRUE
+rule_015,abbreviation,pos,position,Position abbreviation,TRUE
+rule_016,abbreviation,prc,price,Price abbreviation,TRUE
+rule_017,abbreviation,qty,quantity,Quantity abbreviation,TRUE
+rule_018,abbreviation,sec,security,Security abbreviation,TRUE
+rule_019,abbreviation,txn,transaction,Transaction abbreviation,TRUE
+rule_020,abbreviation,val,value,Value abbreviation,TRUE
+rule_021,abbreviation,yr,year,Year abbreviation,TRUE
+rule_022,abbreviation,mth,month,Month abbreviation,TRUE

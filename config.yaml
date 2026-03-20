@@ -1,25 +1,52 @@
 databricks:
-  catalog: shm
-  schema: columnmapping
-  table_prefix: silver
+  catalog: citco_mapping
+  schema: mapping
   warehouse_id: 148ccb90800933a1
+  profile: DEFAULT
 
 tables:
-  rules_table_name: standardization_rules
-  mappings_table_name: standardization_mappings
-  canonical_columns_table_name: canonical_columns
+  canonical_fields: canonical_fields
+  source_columns: source_columns
+  mapping_proposals: mapping_proposals
+  approved_mappings: approved_mappings
+  audit_log: audit_log
+  standardization_rules: standardization_rules
 
-vector_search:
-  endpoint_name: dbdemos_vs_endpoint
-  index_name: standardization_mappings_index
-  embedding_model_endpoint: databricks-bge-large-en
-  delta_sync:
-    primary_key: mapping_id
-    embedding_source_column: platform_header
-    pipeline_type: TRIGGERED
+platforms:
+  - id: aexeo4
+    name: Aexeo 4
+    source_catalog: citco_mapping
+    source_schema: aexeo4
+    description: Fund Administration (legacy)
+  - id: aexeo_s
+    name: Aexeo S
+    source_catalog: citco_mapping
+    source_schema: aexeo_s
+    description: Fund Administration (next-gen)
+  - id: investran
+    name: Investran
+    source_catalog: citco_mapping
+    source_schema: investran
+    description: Private Equity Fund Administration
+  - id: axi
+    name: AXI
+    source_catalog: citco_mapping
+    source_schema: axi
+    description: Investment Operations
+  - id: yardi
+    name: Yardi
+    source_catalog: citco_mapping
+    source_schema: yardi
+    description: Real Estate Fund Administration
+  - id: waterfall
+    name: Waterfall
+    source_catalog: citco_mapping
+    source_schema: waterfall
+    description: Distribution Waterfall Calculations
+
+gold:
+  catalog: citco_mapping
+  schema: gold
 
 llm:
   endpoint: databricks-claude-sonnet-4-5
-
-mapping:
-  top_k: 5

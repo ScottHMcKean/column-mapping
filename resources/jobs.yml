@@ -1,41 +1,26 @@
 resources:
   jobs:
-    column_mapping_setup_vector_search:
-      name: column-mapping-setup-vector-search
+    column_mapping_setup:
+      name: column-mapping-setup
       max_concurrent_runs: 1
       tasks:
         - task_key: setup
           environment_key: default
           notebook_task:
-            notebook_path: ${workspace.root_path}/files/notebooks/01_setup_data_and_vector_search
-            base_parameters:
-              catalog: ${var.catalog}
-              schema: ${var.schema}
-              table_prefix: ${var.table_prefix}
-              vs_endpoint_name: ${var.vs_endpoint_name}
-              vs_index_name: ${var.vs_index_name}
-              embedding_model_endpoint: ${var.embedding_model_endpoint}
+            notebook_path: ${workspace.root_path}/files/notebooks/01_setup_data
       environments:
         - environment_key: default
           spec:
             client: "4"
 
-    column_mapping_run_agentic:
-      name: column-mapping-run-agentic
+    column_mapping_run_agent:
+      name: column-mapping-run-agent
       max_concurrent_runs: 1
       tasks:
         - task_key: run
           environment_key: default
           notebook_task:
-            notebook_path: ${workspace.root_path}/files/notebooks/02_run_column_mapping_agentic
-            base_parameters:
-              catalog: ${var.catalog}
-              schema: ${var.schema}
-              table_prefix: ${var.table_prefix}
-              vs_endpoint_name: ${var.vs_endpoint_name}
-              vs_index_name: ${var.vs_index_name}
-              llm_endpoint: ${var.llm_endpoint}
-              top_k: ${var.top_k}
+            notebook_path: ${workspace.root_path}/files/notebooks/02_run_mapping_agent
       environments:
         - environment_key: default
           spec:

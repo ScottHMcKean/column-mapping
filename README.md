@@ -1,81 +1,153 @@
-# column-mapping
-Agentic column mapping between disparate systems of record using:
+# Citco Column Mapper
 
-- Vector Search to retrieve similar prior mappings (RAG context)
-- A rules table to enforce naming conventions and standard abbreviations
-- An LLM call (`ai_query`) to propose standardized column names + metadata
+Cross-platform column standardization for fund administration data, backed by Delta tables and serverless SQL.
 
-This repo is designed to be easy to explain and extend. The core flow is split into two notebooks:
+Six source platforms (Aexeo 4, Aexeo S, Investran, AXI, Yardi, Waterfall) each use different column naming conventions. This project discovers every column, uses an AI agent to propose mappings to a canonical schema, and provides a Streamlit app for data stewards to review, approve, and generate gold views.
 
-- `notebooks/01_setup_data_and_vector_search.py`: loads demo data and creates a Vector Search index
-- `notebooks/02_run_column_mapping_agentic.py`: runs the mapping workflow and appends results
+## Data Flow
 
-## Repo layout
+```mermaid
+flowchart LR
+    subgraph seed["01_setup_data"]
+        CSV_P[Platform CSVs] --> SRC_TBL[Source Tables]
+        CSV_C[canonical_fields.csv] --> CF[canonical_fields]
+        CSV_R[standardization_rules.csv] --> SR[standardization_rules]
+    end
 
-- `data/`: CSVs for a small end-to-end demo (rules, prior mappings, and two source tables)
-- `notebooks/`: the primary runnable entrypoints on Databricks
-- `src/column_mapping/`: small reusable utilities used by the notebooks
-- `databricks.yml` + `resources/`: Databricks Asset Bundle to deploy and run jobs
+    subgraph batch["02_run_mapping_agent"]
+        SRC_TBL -->|INFORMATION_SCHEMA scan| SC[source_columns]
+        SC --> AGENT{AI Agent}
+        CF --> AGENT
+        SR --> AGENT
+        AM_READ[approved_mappings] -.->|cross-platform context| AGENT
+        AGENT -->|BM25 + LLM| MP[mapping_proposals]
+    end
 
-## Run on Databricks (Databricks Asset Bundle)
+    subgraph app["Streamlit App"]
+        MP --> REVIEW[Steward Review]
+        REVIEW -->|approve| AM[approved_mappings]
+        REVIEW -->|reject / flag| MP
+        AM --> GOLD[Gold Views]
+    end
 
-Prerequisites:
-
-- You have permissions to create tables in the target `catalog.schema`
-- Vector Search is enabled in the workspace
-- The model endpoint referenced by `llm_endpoint` is accessible and `ai_query` is available
-
-### Deploy
-
-From a machine with the Databricks CLI configured:
-
-```bash
-databricks bundle deploy
+    AL[audit_log] -..- batch
+    AL -..- app
 ```
 
-### Run setup (data + Vector Search)
+## How Column Rationalization Works
 
-This loads the demo CSVs into Delta tables and creates/uses a Vector Search endpoint + index.
-If `vs_endpoint_name` is not provided, it will prefer an already-online endpoint. If none exist,
-it will create `column_mapping_vs_endpoint` by default.
+### Step 1 -- Seed reference data
 
-```bash
-databricks bundle run column_mapping_setup_vector_search
+`canonical_fields.csv` defines 30 standard column names with data types, business definitions, and domain categories (Fund, Valuation, Investor, Capital, Fees, Transaction, Security, Position, Reporting, Operations). `standardization_rules.csv` defines 22 abbreviation rules (e.g. `fnd` -> `fund`, `amt` -> `amount`, `txn` -> `transaction`).
+
+Run `01_setup_data` to load these into Delta tables and create the six metadata tables.
+
+### Step 2 -- Load source platform data
+
+The same setup notebook uploads six CSV files into separate Unity Catalog schemas, one per platform:
+
+| Platform | Schema | Table | Columns | Description |
+|---|---|---|---|---|
+| Aexeo 4 | `aexeo4` | `positions` | FND_ID, FUND_NM, NAV_AMT, ... | Fund admin (legacy), UPPER abbreviations |
+| Aexeo S | `aexeo_s` | `investors` | fund_id, fund_name, nav_total, ... | Fund admin (next-gen), lowercase |
+| AXI | `axi` | `transactions` | TXN_ID, TXN_DATE, TXN_AMT, ... | Investment operations, UPPER abbreviations |
+| Investran | `investran` | `commitments` | FundCode, FundName, LPCommitment, ... | PE fund admin, PascalCase |
+| Yardi | `yardi` | `properties` | Property_Fund_ID, Fund Name, ... | Real estate, mixed case with spaces |
+| Waterfall | `waterfall` | `distributions` | WF_Calc_ID, Fund_Ref, Dist_Dt, ... | Distribution waterfalls, underscore prefixes |
+
+### Step 3 -- Discover source columns
+
+`02_run_mapping_agent` scans `INFORMATION_SCHEMA` for every column in every platform schema. Each column is written to the `source_columns` table with a `column_id`, `platform_id`, `source_table`, `column_name`, and `data_type`.
+
+### Step 4 -- AI agent proposes mappings
+
+For each unmapped column, the agent runs a fixed pipeline:
+
+1. **Deterministic standardization** -- lowercase, expand abbreviations (`FND_ID` -> `fund_id`), remove special characters, enforce snake_case.
+2. **BM25 search: approved mappings** -- find similar columns that have already been mapped on other platforms. This is how the agent learns cross-platform patterns (e.g. if `FND_ID` on Aexeo 4 already maps to `fund_identifier`, it will suggest the same for `FundCode` on Investran).
+3. **BM25 search: canonical fields** -- find candidate canonical fields by name, definition, and domain.
+4. **Cross-platform context** -- for the top candidates, gather all platforms that already map to them.
+5. **LLM synthesis** -- send all context to an LLM (`ai_query`) to produce a recommendation with confidence score (0-100) and rationale.
+
+Each result is written to `mapping_proposals` with status `pending_review`.
+
+### Step 5 -- Steward review
+
+Data stewards open the Streamlit app and work through the Data Mapping tab:
+
+- **Approve** -- accepts the AI suggestion and writes to `approved_mappings`.
+- **Reject** -- marks the proposal as rejected.
+- **Flag** -- marks for team discussion.
+- **Reassign** -- override the AI suggestion and pick a different canonical field.
+- **Create and Link** -- if no canonical field fits, create a new one and link in one step.
+
+Every action is recorded in the `audit_log` table.
+
+### Step 6 -- Generate gold views
+
+From the Master File tab, stewards can generate SQL views in the gold schema that rename source columns to their canonical names:
+
+```sql
+CREATE OR REPLACE VIEW citco_mapping.gold.aexeo4__positions AS
+SELECT
+    `FND_ID` AS `fund_identifier`,
+    `FUND_NM` AS `fund_name`,
+    `NAV_AMT` AS `net_asset_value`,
+    ...
+FROM citco_mapping.aexeo4.positions
 ```
 
-### Run mapping (agentic workflow)
+## Delta Tables
 
-This discovers tables matching `table_prefix` (default `silver*`) and standardizes every column:
-Vector Search (similar mappings) + rules -> `ai_query` -> append to the mappings table.
+| Table | Purpose |
+|---|---|
+| `canonical_fields` | 30 standard column definitions (the target schema) |
+| `standardization_rules` | Abbreviation expansion rules for deterministic pre-processing |
+| `source_columns` | Every column discovered from platform schemas |
+| `mapping_proposals` | AI-generated mapping suggestions with confidence and rationale |
+| `approved_mappings` | Steward-approved column-to-canonical links |
+| `audit_log` | Append-only compliance trail of every action |
+
+## Configuration
+
+All settings live in `config.yaml`:
+
+| Setting | Purpose |
+|---|---|
+| `databricks.catalog` / `schema` | Unity Catalog location for metadata tables |
+| `databricks.warehouse_id` | Serverless SQL warehouse |
+| `tables.*` | Names for the six Delta tables |
+| `platforms[]` | Source systems (id, name, source_catalog, source_schema) |
+| `gold.catalog` / `schema` | Where gold views are created |
+| `llm.endpoint` | Model serving endpoint for the batch agent |
+
+Adding a new source platform is one entry under `platforms` plus uploading its data.
+
+## Run locally
 
 ```bash
-databricks bundle run column_mapping_run_agentic
+uv run streamlit run app/app.py
 ```
 
-## Configuration (`config.yaml`)
-
-Default behavior is controlled by `config.yaml` in the repo root (catalog/schema/table names, Vector Search, LLM).
-Databricks job parameters (notebook widgets) act as **optional overrides** on top of this config.
-
-## Use your own tables and rules
-
-Both notebooks are parameterized (Databricks widgets). The most important knobs are:
-
-- **Input tables**: `catalog`, `schema`, `table_prefix` (discovers `table_prefix*` tables)
-- **Rules table**: `rules_table` (defaults to `${catalog}.${schema}.governance_standardization_rules`)
-- **Mappings table**: `mappings_table` (defaults to `${catalog}.${schema}.governance_standardization_mappings`)
-- **Vector Search**: `vs_endpoint_name`, `vs_index_name`, `embedding_model_endpoint`
-- **LLM**: `llm_endpoint`
-
-## Extensibility (next steps)
-
-The mapping notebook intentionally makes the workflow steps explicit so you can add tools later
-(e.g., schema-aware validators, domain classifiers, approval workflows) without rewriting the flow.
+Requires a Databricks workspace with a serverless SQL warehouse and an authenticated CLI profile.
 
 ## Tests
 
-Run unit tests locally:
-
 ```bash
 uv run pytest
+```
+
+## Repo layout
+
+```
+app/                Streamlit application (steward review UI)
+data/               Seed CSVs (6 platforms + canonical fields + rules)
+notebooks/
+  01_setup_data     Load CSVs into Unity Catalog, create tables
+  02_run_mapping_agent  Discover columns and run AI agent
+src/column_mapping/
+  agent_tools       BM25 search, deterministic standardization, abbreviation rules
+  mapping_agent     Agent orchestration (tool pipeline + LLM synthesis)
+config.yaml         All configuration
+resources/          Databricks Asset Bundle job definitions
 ```

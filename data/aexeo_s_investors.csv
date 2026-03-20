@@ -1,0 +1,9 @@
+fund_id,fund_name,fund_ccy,nav_total,nav_date,investor_code,inv_name,commitment,nav_per_unit,sec_id
+FND-2001,Citco Multi-Strategy Alpha,USD,1567823400.00,2025-12-31,INV-501,BlackRock Global Allocation,200000000.00,142.35,US0378331005
+FND-2001,Citco Multi-Strategy Alpha,USD,1567823400.00,2025-12-31,INV-502,Bridgewater Associates,350000000.00,142.35,US0378331005
+FND-2002,Citco Emerging Markets Debt,USD,742910500.50,2025-12-31,INV-503,PIMCO Investment Management,100000000.00,108.92,US9128283M09
+FND-2002,Citco Emerging Markets Debt,USD,742910500.50,2025-12-31,INV-504,Wellington Management,125000000.00,108.92,XS1234567890
+FND-2003,Citco Real Assets Income,EUR,891234567.00,2025-12-31,INV-505,Norges Bank Investment Mgmt,175000000.00,156.78,DE0001135176
+FND-2003,Citco Real Assets Income,EUR,891234567.00,2025-12-31,INV-506,Swiss National Bank,250000000.00,156.78,CH0012138530
+FND-2004,Citco Quantitative Strategies,GBP,456789012.25,2025-12-31,INV-507,Man Group PLC,80000000.00,98.45,GB00BYX5HQ31
+FND-2004,Citco Quantitative Strategies,GBP,456789012.25,2025-12-31,INV-508,Winton Group Ltd,60000000.00,98.45,GB00BYX5HQ31

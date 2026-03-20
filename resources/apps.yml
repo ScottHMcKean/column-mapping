@@ -1,6 +1,9 @@
-resources:
-  apps:
-    column_mapping_review:
-      name: shm-column-mapper
-      description: "Review and manage column mapping approvals"
-      source_code_path: ../app
+# App deployment blocked by workspace SP quota (20k limit).
+# Uncomment when deploying to a workspace with available SP slots.
+#
+# resources:
+#   apps:
+#     citco_mapping:
+#       name: citco-column-mapper
+#       description: "Citco Column Mapper -- standardize and match column headers across platforms"
+#       source_code_path: ../app

@@ -1,6 +1,6 @@
-"""Column mapping demo package.
+"""Column mapping package.
 
-The notebooks under `notebooks/` are the primary entry points. This package holds small,
-reusable utilities so the notebook flow stays easy to read and extend.
+Reusable utilities for cross-platform column standardization:
+  - agent_tools: BM25 search, deterministic standardization, abbreviation rules
+  - mapping_agent: orchestrates tool calls + LLM synthesis for mapping proposals
 """
-
