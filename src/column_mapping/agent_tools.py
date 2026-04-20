@@ -69,19 +69,12 @@ def _bm25_search(
     return results
 
 
-def search_approved_mappings(
-    query: str,
+def _join_approved_docs(
     source_columns: list[dict],
     approved_mappings: list[dict],
     canonical_fields: list[dict],
-    top_k: int = 5,
 ) -> list[dict[str, Any]]:
-    """BM25 search over approved column-to-canonical mappings.
-
-    Joins source_columns -> approved_mappings -> canonical_fields and searches
-    over a composite text field combining the source column name, canonical
-    name, and business definition.
-    """
+    """Join source -> approved -> canonical into searchable documents."""
     canon_by_id = {c["canonical_id"]: c for c in canonical_fields}
     col_by_id = {c["column_id"]: c for c in source_columns}
 
@@ -107,8 +100,73 @@ def search_approved_mappings(
                 canon.get("business_definition", ""),
             ]),
         })
+    return joined
 
-    index, docs = build_bm25_index(joined, "_search_text")
+
+def _enrich_canonical_docs(canonical_fields: list[dict]) -> list[dict[str, Any]]:
+    """Add composite search text to canonical field dicts."""
+    return [
+        {
+            **c,
+            "_search_text": " ".join([
+                c.get("canonical_name", ""),
+                c.get("business_definition", ""),
+                c.get("domain_category", ""),
+            ]),
+        }
+        for c in canonical_fields
+    ]
+
+
+def prepare_search_context(
+    source_columns: list[dict],
+    approved_mappings: list[dict],
+    canonical_fields: list[dict],
+) -> dict[str, Any]:
+    """Pre-build BM25 indices for reuse across many search calls.
+
+    Returns a dict with keys:
+        approved_index, approved_docs  -- for search_approved_mappings
+        canonical_index, canonical_docs -- for search_canonical_fields
+    """
+    approved_docs = _join_approved_docs(source_columns, approved_mappings, canonical_fields)
+    approved_index, approved_docs = build_bm25_index(approved_docs, "_search_text")
+
+    canonical_docs = _enrich_canonical_docs(canonical_fields)
+    canonical_index, canonical_docs = build_bm25_index(canonical_docs, "_search_text")
+
+    return {
+        "approved_index": approved_index,
+        "approved_docs": approved_docs,
+        "canonical_index": canonical_index,
+        "canonical_docs": canonical_docs,
+    }
+
+
+def search_approved_mappings(
+    query: str,
+    source_columns: list[dict],
+    approved_mappings: list[dict],
+    canonical_fields: list[dict],
+    top_k: int = 5,
+    *,
+    prebuilt: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """BM25 search over approved column-to-canonical mappings.
+
+    Joins source_columns -> approved_mappings -> canonical_fields and searches
+    over a composite text field combining the source column name, canonical
+    name, and business definition.
+
+    Pass ``prebuilt`` (from prepare_search_context) to skip index construction.
+    """
+    if prebuilt:
+        index = prebuilt["approved_index"]
+        docs = prebuilt["approved_docs"]
+    else:
+        joined = _join_approved_docs(source_columns, approved_mappings, canonical_fields)
+        index, docs = build_bm25_index(joined, "_search_text")
+
     results = _bm25_search(query, index, docs, top_k)
     for r in results:
         r.pop("_search_text", None)
@@ -119,20 +177,20 @@ def search_canonical_fields(
     query: str,
     canonical_fields: list[dict],
     top_k: int = 5,
+    *,
+    prebuilt: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """BM25 search over canonical fields using name + definition + domain."""
-    enriched = []
-    for c in canonical_fields:
-        enriched.append({
-            **c,
-            "_search_text": " ".join([
-                c.get("canonical_name", ""),
-                c.get("business_definition", ""),
-                c.get("domain_category", ""),
-            ]),
-        })
+    """BM25 search over canonical fields using name + definition + domain.
 
-    index, docs = build_bm25_index(enriched, "_search_text")
+    Pass ``prebuilt`` (from prepare_search_context) to skip index construction.
+    """
+    if prebuilt:
+        index = prebuilt["canonical_index"]
+        docs = prebuilt["canonical_docs"]
+    else:
+        enriched = _enrich_canonical_docs(canonical_fields)
+        index, docs = build_bm25_index(enriched, "_search_text")
+
     results = _bm25_search(query, index, docs, top_k)
     for r in results:
         r.pop("_search_text", None)

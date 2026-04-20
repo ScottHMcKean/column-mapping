@@ -7,6 +7,7 @@ from column_mapping.agent_tools import (
     deterministic_standardize,
     get_abbreviation_rules,
     get_cross_platform_context,
+    prepare_search_context,
     search_approved_mappings,
     search_canonical_fields,
 )
@@ -74,6 +75,29 @@ class TestBuildBm25Index:
         assert docs == []
 
 
+class TestPrepareSearchContext:
+    def test_returns_all_keys(self):
+        ctx = prepare_search_context(SOURCE_COLUMNS, APPROVED_MAPPINGS, CANONICAL_FIELDS)
+        assert "approved_index" in ctx
+        assert "approved_docs" in ctx
+        assert "canonical_index" in ctx
+        assert "canonical_docs" in ctx
+
+    def test_indices_are_usable(self):
+        ctx = prepare_search_context(SOURCE_COLUMNS, APPROVED_MAPPINGS, CANONICAL_FIELDS)
+        assert ctx["approved_index"] is not None
+        assert len(ctx["approved_docs"]) == len(APPROVED_MAPPINGS)
+        assert ctx["canonical_index"] is not None
+        assert len(ctx["canonical_docs"]) == len(CANONICAL_FIELDS)
+
+    def test_empty_data(self):
+        ctx = prepare_search_context([], [], [])
+        assert ctx["approved_index"] is None
+        assert ctx["approved_docs"] == []
+        assert ctx["canonical_index"] is None
+        assert ctx["canonical_docs"] == []
+
+
 class TestSearchCanonicalFields:
     def test_finds_fund_identifier(self):
         results = search_canonical_fields("fund identifier", CANONICAL_FIELDS, top_k=3)
@@ -97,6 +121,12 @@ class TestSearchCanonicalFields:
     def test_no_match_returns_empty(self):
         results = search_canonical_fields("xyzzy gibberish", CANONICAL_FIELDS, top_k=3)
         assert isinstance(results, list)
+
+    def test_with_prebuilt(self):
+        ctx = prepare_search_context(SOURCE_COLUMNS, APPROVED_MAPPINGS, CANONICAL_FIELDS)
+        results = search_canonical_fields("fund identifier", CANONICAL_FIELDS, top_k=3, prebuilt=ctx)
+        assert len(results) > 0
+        assert results[0]["canonical_name"] == "fund_identifier"
 
 
 class TestSearchApprovedMappings:
@@ -123,6 +153,15 @@ class TestSearchApprovedMappings:
         )
         ids = {r["column_id"] for r in results}
         assert "sc_999" not in ids
+
+    def test_with_prebuilt(self):
+        ctx = prepare_search_context(SOURCE_COLUMNS, APPROVED_MAPPINGS, CANONICAL_FIELDS)
+        results = search_approved_mappings(
+            "net asset value total", SOURCE_COLUMNS, APPROVED_MAPPINGS, CANONICAL_FIELDS,
+            top_k=3, prebuilt=ctx,
+        )
+        assert len(results) > 0
+        assert results[0]["canonical_name"] == "net_asset_value"
 
 
 class TestGetCrossPlatformContext:

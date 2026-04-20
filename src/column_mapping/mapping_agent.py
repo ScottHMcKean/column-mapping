@@ -15,6 +15,7 @@ from column_mapping.agent_tools import (
     deterministic_standardize,
     get_abbreviation_rules,
     get_cross_platform_context,
+    prepare_search_context,
     search_approved_mappings,
     search_canonical_fields,
 )
@@ -139,6 +140,95 @@ def _call_llm(sql_fn: Callable, llm_endpoint: str, prompt: str) -> dict[str, Any
     return _extract_json(rows[0]["result"])
 
 
+def build_prompt_for_column(
+    column_name: str,
+    platform_name: str,
+    *,
+    source_columns: list[dict],
+    approved_mappings: list[dict],
+    canonical_fields: list[dict],
+    rules: list[dict],
+    top_k: int = 5,
+    prebuilt: dict[str, Any] | None = None,
+) -> str:
+    """Run the retrieval pipeline and return the LLM prompt (no LLM call).
+
+    This is the pure-Python portion of the agent: deterministic standardize,
+    BM25 search, cross-platform context, then prompt assembly. Use this to
+    build prompts in bulk before sending them to ai_query in a single SQL call.
+
+    Pass ``prebuilt`` (from prepare_search_context) to avoid rebuilding BM25
+    indices on every call.
+    """
+    abbreviations = get_abbreviation_rules(rules)
+    rule_std = deterministic_standardize(column_name, abbreviations)
+
+    similar = search_approved_mappings(
+        query=f"{column_name} {rule_std}",
+        source_columns=source_columns,
+        approved_mappings=approved_mappings,
+        canonical_fields=canonical_fields,
+        top_k=top_k,
+        prebuilt=prebuilt,
+    )
+
+    candidates = search_canonical_fields(
+        query=f"{column_name} {rule_std}",
+        canonical_fields=canonical_fields,
+        top_k=top_k,
+        prebuilt=prebuilt,
+    )
+
+    cross_platform: dict[str, list[dict]] = {}
+    seen_canonical_ids: set[str] = set()
+    for src in [similar, candidates]:
+        for item in src[:3]:
+            cid = item.get("canonical_id")
+            if cid and cid not in seen_canonical_ids:
+                seen_canonical_ids.add(cid)
+                ctx = get_cross_platform_context(cid, approved_mappings, source_columns)
+                cname = item.get("canonical_name", cid)
+                if ctx:
+                    cross_platform[cname] = ctx
+
+    return build_agent_prompt(
+        column_name=column_name,
+        platform_name=platform_name,
+        rule_standardized=rule_std,
+        similar_mappings=similar,
+        canonical_candidates=candidates,
+        cross_platform=cross_platform,
+        abbreviations=abbreviations,
+    )
+
+
+def parse_llm_response(raw_text: str, fallback_standardized: str = "") -> AgentResult:
+    """Parse a raw LLM response string into an AgentResult."""
+    try:
+        llm_output = _extract_json(raw_text)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return AgentResult(
+            standardized_name=fallback_standardized,
+            error=f"Failed to parse LLM response: {exc}",
+        )
+
+    alts = llm_output.get("alternatives", [])
+    if not isinstance(alts, list):
+        alts = []
+
+    return AgentResult(
+        recommended_canonical_id=llm_output.get("recommended_canonical_id"),
+        recommended_canonical_name=llm_output.get("recommended_canonical_name"),
+        confidence=int(llm_output.get("confidence", 0)),
+        rationale=llm_output.get("rationale", ""),
+        standardized_name=llm_output.get("standardized_name", fallback_standardized),
+        data_type=llm_output.get("data_type", ""),
+        business_definition=llm_output.get("business_definition", ""),
+        domain_category=llm_output.get("domain_category", ""),
+        alternatives=alts,
+    )
+
+
 def run_mapping_agent(
     column_name: str,
     platform_id: str,
@@ -151,6 +241,7 @@ def run_mapping_agent(
     sql_fn: Callable,
     llm_endpoint: str,
     top_k: int = 5,
+    prebuilt: dict[str, Any] | None = None,
 ) -> AgentResult:
     """Run the mapping agent for a single source column.
 
@@ -173,6 +264,7 @@ def run_mapping_agent(
         sql_fn: callable that executes SQL and returns list[dict].
         llm_endpoint: Databricks model serving endpoint name.
         top_k: number of results for BM25 searches.
+        prebuilt: pre-built BM25 indices from prepare_search_context.
 
     Returns:
         AgentResult with recommendation, rationale, and full tool call log.
@@ -185,43 +277,15 @@ def run_mapping_agent(
     rule_std = deterministic_standardize(column_name, abbreviations)
     tool_results["rule_standardized"] = rule_std
 
-    similar = search_approved_mappings(
-        query=f"{column_name} {rule_std}",
+    prompt = build_prompt_for_column(
+        column_name=column_name,
+        platform_name=platform_name,
         source_columns=source_columns,
         approved_mappings=approved_mappings,
         canonical_fields=canonical_fields,
+        rules=rules,
         top_k=top_k,
-    )
-    tool_results["similar_mappings"] = similar
-
-    candidates = search_canonical_fields(
-        query=f"{column_name} {rule_std}",
-        canonical_fields=canonical_fields,
-        top_k=top_k,
-    )
-    tool_results["canonical_candidates"] = candidates
-
-    cross_platform: dict[str, list[dict]] = {}
-    seen_canonical_ids = set()
-    for src in [similar, candidates]:
-        for item in src[:3]:
-            cid = item.get("canonical_id")
-            if cid and cid not in seen_canonical_ids:
-                seen_canonical_ids.add(cid)
-                ctx = get_cross_platform_context(cid, approved_mappings, source_columns)
-                cname = item.get("canonical_name", cid)
-                if ctx:
-                    cross_platform[cname] = ctx
-    tool_results["cross_platform"] = cross_platform
-
-    prompt = build_agent_prompt(
-        column_name=column_name,
-        platform_name=platform_name,
-        rule_standardized=rule_std,
-        similar_mappings=similar,
-        canonical_candidates=candidates,
-        cross_platform=cross_platform,
-        abbreviations=abbreviations,
+        prebuilt=prebuilt,
     )
     tool_results["prompt"] = prompt
 
@@ -235,19 +299,6 @@ def run_mapping_agent(
             tool_results=tool_results,
         )
 
-    alts = llm_output.get("alternatives", [])
-    if not isinstance(alts, list):
-        alts = []
-
-    return AgentResult(
-        recommended_canonical_id=llm_output.get("recommended_canonical_id"),
-        recommended_canonical_name=llm_output.get("recommended_canonical_name"),
-        confidence=int(llm_output.get("confidence", 0)),
-        rationale=llm_output.get("rationale", ""),
-        standardized_name=llm_output.get("standardized_name", rule_std),
-        data_type=llm_output.get("data_type", ""),
-        business_definition=llm_output.get("business_definition", ""),
-        domain_category=llm_output.get("domain_category", ""),
-        alternatives=alts,
-        tool_results=tool_results,
-    )
+    result = parse_llm_response(json.dumps(llm_output), fallback_standardized=rule_std)
+    result.tool_results = tool_results
+    return result

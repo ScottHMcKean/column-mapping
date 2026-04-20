@@ -3,10 +3,13 @@
 import json
 
 import pytest
+from column_mapping.agent_tools import prepare_search_context
 from column_mapping.mapping_agent import (
     AgentResult,
     _extract_json,
     build_agent_prompt,
+    build_prompt_for_column,
+    parse_llm_response,
     run_mapping_agent,
 )
 
@@ -169,6 +172,85 @@ class TestAgentResult:
         assert r.confidence == 95
 
 
+class TestBuildPromptForColumn:
+    def test_returns_prompt_string(self):
+        prompt = build_prompt_for_column(
+            column_name="FND_ID",
+            platform_name="Alpha Ledger",
+            source_columns=SOURCE_COLUMNS,
+            approved_mappings=APPROVED_MAPPINGS,
+            canonical_fields=CANONICAL_FIELDS,
+            rules=RULES,
+        )
+        assert isinstance(prompt, str)
+        assert "FND_ID" in prompt
+        assert "Alpha Ledger" in prompt
+
+    def test_with_prebuilt_indices(self):
+        ctx = prepare_search_context(SOURCE_COLUMNS, APPROVED_MAPPINGS, CANONICAL_FIELDS)
+        prompt = build_prompt_for_column(
+            column_name="FND_ID",
+            platform_name="Alpha Ledger",
+            source_columns=SOURCE_COLUMNS,
+            approved_mappings=APPROVED_MAPPINGS,
+            canonical_fields=CANONICAL_FIELDS,
+            rules=RULES,
+            prebuilt=ctx,
+        )
+        assert isinstance(prompt, str)
+        assert "FND_ID" in prompt
+        assert "RULE-STANDARDIZED" in prompt
+
+    def test_prebuilt_matches_fresh(self):
+        ctx = prepare_search_context(SOURCE_COLUMNS, APPROVED_MAPPINGS, CANONICAL_FIELDS)
+        fresh = build_prompt_for_column(
+            column_name="FND_ID",
+            platform_name="Alpha Ledger",
+            source_columns=SOURCE_COLUMNS,
+            approved_mappings=APPROVED_MAPPINGS,
+            canonical_fields=CANONICAL_FIELDS,
+            rules=RULES,
+        )
+        prebuilt = build_prompt_for_column(
+            column_name="FND_ID",
+            platform_name="Alpha Ledger",
+            source_columns=SOURCE_COLUMNS,
+            approved_mappings=APPROVED_MAPPINGS,
+            canonical_fields=CANONICAL_FIELDS,
+            rules=RULES,
+            prebuilt=ctx,
+        )
+        assert fresh == prebuilt
+
+
+class TestParseLlmResponse:
+    def test_valid_response(self):
+        raw = json.dumps({
+            "recommended_canonical_id": "cf_001",
+            "recommended_canonical_name": "fund_identifier",
+            "confidence": 90,
+            "rationale": "Good match.",
+            "standardized_name": "fund_id",
+            "data_type": "STRING",
+            "business_definition": "Fund ID",
+            "domain_category": "Fund",
+            "alternatives": [],
+        })
+        result = parse_llm_response(raw)
+        assert result.error is None
+        assert result.recommended_canonical_id == "cf_001"
+        assert result.confidence == 90
+
+    def test_invalid_json(self):
+        result = parse_llm_response("not json at all")
+        assert result.error is not None
+        assert "parse" in result.error.lower() or "json" in result.error.lower()
+
+    def test_fallback_standardized(self):
+        result = parse_llm_response("bad", fallback_standardized="my_col")
+        assert result.standardized_name == "my_col"
+
+
 class TestRunMappingAgent:
     def test_llm_error_returns_result_with_error(self):
         def failing_sql(query):
@@ -190,7 +272,6 @@ class TestRunMappingAgent:
         assert result.error is not None
         assert "LLM unavailable" in result.error
         assert result.tool_results.get("rule_standardized") == "fund_id"
-        assert "canonical_candidates" in result.tool_results
         assert "prompt" in result.tool_results
 
     def test_successful_llm_returns_result(self):
@@ -231,3 +312,37 @@ class TestRunMappingAgent:
         assert "fund_identifier" in result.rationale
         assert len(result.alternatives) == 1
         assert result.tool_results.get("rule_standardized") == "fund_id"
+
+    def test_with_prebuilt_indices(self):
+        llm_response = json.dumps({
+            "recommended_canonical_id": "cf_001",
+            "recommended_canonical_name": "fund_identifier",
+            "confidence": 92,
+            "rationale": "Strong match.",
+            "standardized_name": "fund_id",
+            "data_type": "STRING",
+            "business_definition": "Unique fund identifier",
+            "domain_category": "Fund",
+            "alternatives": [],
+        })
+
+        def mock_sql(query):
+            if "ai_query" in query:
+                return [{"result": llm_response}]
+            return []
+
+        ctx = prepare_search_context(SOURCE_COLUMNS, APPROVED_MAPPINGS, CANONICAL_FIELDS)
+        result = run_mapping_agent(
+            column_name="FND_ID",
+            platform_id="alpha_ledger",
+            platform_name="Alpha Ledger",
+            source_columns=SOURCE_COLUMNS,
+            approved_mappings=APPROVED_MAPPINGS,
+            canonical_fields=CANONICAL_FIELDS,
+            rules=RULES,
+            sql_fn=mock_sql,
+            llm_endpoint="test-endpoint",
+            prebuilt=ctx,
+        )
+        assert result.error is None
+        assert result.recommended_canonical_id == "cf_001"

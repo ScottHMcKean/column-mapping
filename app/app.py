@@ -1,10 +1,11 @@
 """
 Column Mapper
 =============
-Two-page Streamlit app for cross-platform column standardization.
+Three-tab Streamlit app for cross-platform column standardization.
 
-  Data Mapping -- Discover source columns, run the AI mapping agent, review proposals
-  Master File  -- Manage the canonical field registry, gold views, and audit log
+  1. Map Columns   -- Discover source columns and run the AI mapping agent
+  2. Review Mappings -- Review, approve, reject proposals; view approved mapping matrix
+  3. Master Fields  -- Manage the canonical field registry, gold views, rules, and audit log
 
 All tables are Delta tables in Unity Catalog (serverless SQL warehouse).
 Tables and seed data are created by the 01_setup_data Databricks job.
@@ -381,18 +382,17 @@ def _ensure_src_on_path():
             return
 
 
-def _deterministic_fast_match(col: dict, canonical: list[dict], rules: list[dict]) -> dict | None:
+def _deterministic_fast_match(col: dict, canon_by_name: dict, abbreviations: dict) -> dict | None:
     """Try to match a column to a canonical field without calling the LLM.
 
-    Returns a result dict if there's a high-confidence deterministic match,
-    or None to fall back to the full LLM pipeline.
+    Accepts pre-built canon_by_name dict and abbreviations to avoid rebuilding
+    per call. Returns a result dict if there's a high-confidence deterministic
+    match, or None to fall back to the full LLM pipeline.
     """
-    from column_mapping.agent_tools import deterministic_standardize, get_abbreviation_rules
+    from column_mapping.agent_tools import deterministic_standardize
 
-    abbrevs = get_abbreviation_rules(rules)
-    std_name = deterministic_standardize(col["column_name"], abbrevs)
+    std_name = deterministic_standardize(col["column_name"], abbreviations)
 
-    canon_by_name = {c["canonical_name"]: c for c in canonical}
     if std_name in canon_by_name:
         c = canon_by_name[std_name]
         return {
@@ -414,18 +414,66 @@ def _deterministic_fast_match(col: dict, canonical: list[dict], rules: list[dict
     return None
 
 
+def _batch_insert_proposals(rows: list[str]) -> None:
+    """Write proposal rows in chunks of 100."""
+    for i in range(0, len(rows), 100):
+        chunk = rows[i : i + 100]
+        run_stmt(
+            f"INSERT INTO {T_PROPOSALS} "
+            f"(proposal_id, column_id, suggested_canonical_id, suggested_canonical_name, "
+            f"confidence, confidence_level, reasoning, agent_model, batch_id, status, created_at) "
+            f"VALUES {', '.join(chunk)}"
+        )
+
+
+def _batch_insert_audit(rows: list[str]) -> None:
+    """Write audit rows in chunks of 100."""
+    for i in range(0, len(rows), 100):
+        chunk = rows[i : i + 100]
+        run_stmt(
+            f"INSERT INTO {T_AUDIT} "
+            f"(event_id, entity_type, entity_id, action, actor, details, created_at) "
+            f"VALUES {', '.join(chunk)}"
+        )
+
+
+def _make_proposal_row(batch_id, col, canonical_id, canonical_name, confidence, rationale, model_name):
+    """Build SQL VALUES tuple strings for a proposal + audit entry. Returns (proposal_val, audit_val, prop_id)."""
+    confidence_level = (
+        "high" if confidence >= CONFIDENCE_HIGH_MIN
+        else "medium" if confidence >= CONFIDENCE_MEDIUM_MIN
+        else "low"
+    )
+    prop_id = uuid.uuid4().hex[:12]
+    proposal_val = (
+        f"({_esc(prop_id)}, {_esc(col['column_id'])}, "
+        f"{_esc(canonical_id)}, {_esc(canonical_name)}, "
+        f"{confidence}, {_esc(confidence_level)}, "
+        f"{_esc((rationale or '')[:MAX_RATIONALE_LEN])}, {_esc(model_name)}, "
+        f"{_esc(batch_id)}, 'pending_review', current_timestamp())"
+    )
+    audit_val = (
+        f"({_esc(uuid.uuid4().hex[:12])}, 'proposal', {_esc(prop_id)}, "
+        f"'created', 'agent_batch', "
+        f"{_esc(json.dumps({'column': col['column_name'], 'confidence': confidence}))}, "
+        f"current_timestamp())"
+    )
+    return proposal_val, audit_val
+
+
 def run_batch_mapping(progress_bar=None, status_text=None) -> int:
     """Run the mapping agent on all unmapped source columns.
 
-    Uses a deterministic fast-path for obvious matches and parallel LLM
-    calls (8 concurrent threads) for the rest.
+    Optimized pipeline:
+        Phase 1 -- deterministic fast-path (pure Python, one batch INSERT)
+        Phase 2 -- build LLM prompts locally (BM25 + standardize, no SQL)
+        Phase 3 -- single bulk ai_query call (warehouse parallelizes internally)
+        Phase 4 -- parse results and batch-write proposals + audit
     """
-    import threading
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     _ensure_src_on_path()
 
-    from column_mapping.mapping_agent import run_mapping_agent
+    from column_mapping.agent_tools import get_abbreviation_rules, prepare_search_context
+    from column_mapping.mapping_agent import build_prompt_for_column, parse_llm_response
 
     batch_id = uuid.uuid4().hex[:12]
     all_source = _safe_load(f"SELECT * FROM {T_SOURCE}")
@@ -447,102 +495,137 @@ def run_batch_mapping(progress_bar=None, status_text=None) -> int:
     if not unmapped:
         return 0
 
-    counter = {"done": 0, "written": 0}
-    lock = threading.Lock()
     total = len(unmapped)
+    done = 0
 
-    def _write_proposal(col, canonical_id, canonical_name, confidence, rationale, model_name):
-        confidence_level = (
-            "high" if confidence >= CONFIDENCE_HIGH_MIN
-            else "medium" if confidence >= CONFIDENCE_MEDIUM_MIN
-            else "low"
-        )
-        prop_id = uuid.uuid4().hex[:12]
-        audit_id = uuid.uuid4().hex[:12]
-        run_stmt(
-            f"INSERT INTO {T_PROPOSALS} "
-            f"(proposal_id, column_id, suggested_canonical_id, suggested_canonical_name, "
-            f"confidence, confidence_level, reasoning, agent_model, batch_id, status, created_at) "
-            f"VALUES ({_esc(prop_id)}, {_esc(col['column_id'])}, "
-            f"{_esc(canonical_id)}, {_esc(canonical_name)}, "
-            f"{confidence}, {_esc(confidence_level)}, "
-            f"{_esc((rationale or '')[:MAX_RATIONALE_LEN])}, {_esc(model_name)}, "
-            f"{_esc(batch_id)}, 'pending_review', current_timestamp());"
-            f"INSERT INTO {T_AUDIT} "
-            f"(event_id, entity_type, entity_id, action, actor, details, created_at) "
-            f"VALUES ({_esc(audit_id)}, 'proposal', {_esc(prop_id)}, "
-            f"'created', 'agent_batch', "
-            f"{_esc(json.dumps({'column': col['column_name'], 'confidence': confidence}))}, "
-            f"current_timestamp())"
-        )
-        return True
+    # -- Pre-build shared data structures once --
+    abbreviations = get_abbreviation_rules(rules)
+    canon_by_name = {c["canonical_name"]: c for c in canonical}
+    search_ctx = prepare_search_context(all_source, approved, canonical)
 
-    # Phase 1: deterministic fast-path (no LLM needed)
-    need_llm = []
+    # ----------------------------------------------------------------
+    # Phase 1: deterministic fast-path (no LLM, no SQL per column)
+    # ----------------------------------------------------------------
+    det_proposal_vals: list[str] = []
+    det_audit_vals: list[str] = []
+    need_llm: list[dict] = []
+
     for col in unmapped:
-        fast = _deterministic_fast_match(col, canonical, rules)
+        fast = _deterministic_fast_match(col, canon_by_name, abbreviations)
         if fast:
-            _write_proposal(col, fast["canonical_id"], fast["canonical_name"],
-                            fast["confidence"], fast["rationale"], "deterministic")
-            counter["written"] += 1
-            counter["done"] += 1
+            p_val, a_val = _make_proposal_row(
+                batch_id, col, fast["canonical_id"], fast["canonical_name"],
+                fast["confidence"], fast["rationale"], "deterministic",
+            )
+            det_proposal_vals.append(p_val)
+            det_audit_vals.append(a_val)
+            done += 1
             _log(f"fast-match: {col['column_name']} -> {fast['canonical_name']}")
         else:
             need_llm.append(col)
 
+    if det_proposal_vals:
+        _batch_insert_proposals(det_proposal_vals)
+        _batch_insert_audit(det_audit_vals)
+
     if status_text:
-        status_text.text(f"Fast-matched {counter['written']}/{total}. Running LLM on {len(need_llm)} remaining...")
+        status_text.text(f"Fast-matched {len(det_proposal_vals)}/{total}. Building prompts for {len(need_llm)} remaining...")
     if progress_bar:
-        progress_bar.progress(counter["done"] / total if total else 1.0)
+        progress_bar.progress(done / total if total else 1.0)
 
-    # Phase 2: parallel LLM calls for remaining columns
-    def _process_one(col):
+    # ----------------------------------------------------------------
+    # Phase 2: build LLM prompts locally (pure Python, no SQL)
+    # ----------------------------------------------------------------
+    col_prompts: list[tuple[dict, str]] = []
+    for col in need_llm:
         pname = PLAT_NAMES.get(col["platform_id"], col["platform_id"])
-        try:
-            result = run_mapping_agent(
-                column_name=col["column_name"],
-                platform_id=col["platform_id"],
-                platform_name=pname,
-                source_columns=all_source,
-                approved_mappings=approved,
-                canonical_fields=canonical,
-                rules=rules,
-                sql_fn=run_sql,
-                llm_endpoint=LLM_ENDPOINT,
-            )
-        except Exception as exc:
-            _log(f"agent error for {col['column_name']}: {exc}")
-            return None
-
-        if result.error:
-            _log(f"agent result error for {col['column_name']}: {result.error}")
-            return None
-
-        _write_proposal(
-            col, result.recommended_canonical_id, result.recommended_canonical_name,
-            result.confidence, result.rationale, LLM_ENDPOINT,
+        prompt = build_prompt_for_column(
+            column_name=col["column_name"],
+            platform_name=pname,
+            source_columns=all_source,
+            approved_mappings=approved,
+            canonical_fields=canonical,
+            rules=rules,
+            top_k=5,
+            prebuilt=search_ctx,
         )
-        return col["column_name"]
+        col_prompts.append((col, prompt))
 
-    if need_llm:
-        with ThreadPoolExecutor(max_workers=MAX_LLM_WORKERS) as pool:
-            futures = {pool.submit(_process_one, col): col for col in need_llm}
-            for future in as_completed(futures):
-                col = futures[future]
-                with lock:
-                    counter["done"] += 1
-                    name = future.result()
-                    if name:
-                        counter["written"] += 1
-                    if progress_bar:
-                        progress_bar.progress(counter["done"] / total)
-                    if status_text:
-                        status_text.text(
-                            f"[{counter['done']}/{total}] "
-                            f"{PLAT_NAMES.get(col['platform_id'], '')} | {col['column_name']}"
-                        )
+    if status_text and col_prompts:
+        status_text.text(f"Sending {len(col_prompts)} columns to LLM in bulk...")
 
-    return counter["written"]
+    # ----------------------------------------------------------------
+    # Phase 3: single bulk ai_query call
+    # ----------------------------------------------------------------
+    llm_proposal_vals: list[str] = []
+    llm_audit_vals: list[str] = []
+
+    if col_prompts:
+        value_rows = []
+        for idx, (col, prompt) in enumerate(col_prompts):
+            escaped_prompt = prompt.replace("'", "''")
+            value_rows.append(f"({idx}, {_esc(col['column_id'])}, '{escaped_prompt}')")
+
+        values_sql = ", ".join(value_rows)
+        bulk_sql = (
+            f"WITH prompts AS ("
+            f"  SELECT idx, column_id, prompt FROM VALUES {values_sql} AS t(idx, column_id, prompt)"
+            f") "
+            f"SELECT idx, column_id, ai_query('{LLM_ENDPOINT}', prompt) AS result "
+            f"FROM prompts ORDER BY idx"
+        )
+
+        try:
+            llm_rows = run_sql(bulk_sql)
+        except Exception as exc:
+            _log(f"Bulk ai_query failed: {exc}")
+            llm_rows = []
+
+        if progress_bar:
+            progress_bar.progress(0.7)
+        if status_text:
+            status_text.text(f"Parsing {len(llm_rows)} LLM results...")
+
+        col_by_idx = {idx: col for idx, (col, _prompt) in enumerate(col_prompts)}
+
+        for row in llm_rows:
+            idx = int(row["idx"])
+            col = col_by_idx.get(idx)
+            if not col:
+                continue
+            raw_text = row.get("result", "")
+            result = parse_llm_response(raw_text)
+            if result.error:
+                _log(f"LLM parse error for {col['column_name']}: {result.error}")
+                continue
+
+            p_val, a_val = _make_proposal_row(
+                batch_id, col,
+                result.recommended_canonical_id,
+                result.recommended_canonical_name,
+                result.confidence,
+                result.rationale,
+                LLM_ENDPOINT,
+            )
+            llm_proposal_vals.append(p_val)
+            llm_audit_vals.append(a_val)
+            done += 1
+
+    # ----------------------------------------------------------------
+    # Phase 4: batch-write all LLM results
+    # ----------------------------------------------------------------
+    if llm_proposal_vals:
+        _batch_insert_proposals(llm_proposal_vals)
+        _batch_insert_audit(llm_audit_vals)
+
+    written = len(det_proposal_vals) + len(llm_proposal_vals)
+
+    if progress_bar:
+        progress_bar.progress(1.0)
+    if status_text:
+        status_text.text(f"Complete: {written} proposals written ({len(det_proposal_vals)} deterministic, {len(llm_proposal_vals)} LLM).")
+
+    return written
 
 
 # =====================================================================
@@ -639,9 +722,45 @@ except Exception:
 
 st.sidebar.markdown(
     '<div style="text-align:center; padding:0.5rem 0;">'
-    '<span style="font-size:1.1em; font-weight:600; color:#1B2A4A;">Column Mapper</span></div>',
+    '<span style="font-size:1.3em; font-weight:700; color:#1B2A4A;">Column Mapper</span></div>',
     unsafe_allow_html=True,
 )
+st.sidebar.divider()
+
+_NAV_CSS = """
+<style>
+.nav-step { padding: 10px 14px; border-radius: 8px; margin: 4px 0; display: block;
+            text-decoration: none !important; color: #1B2A4A !important;
+            border: 1px solid #e0e0e0; transition: background 0.15s; }
+.nav-step:hover { background: #eef1f6; }
+.nav-num  { display: inline-block; width: 24px; height: 24px; border-radius: 50%;
+            background: #1B2A4A; color: #fff; text-align: center; line-height: 24px;
+            font-size: 0.8em; font-weight: 700; margin-right: 8px; }
+.nav-label { font-weight: 600; font-size: 0.92em; }
+.nav-desc  { font-size: 0.78em; color: #666; margin-top: 2px; margin-left: 32px; }
+</style>
+"""
+st.sidebar.markdown(_NAV_CSS, unsafe_allow_html=True)
+
+st.sidebar.markdown(
+    '<a class="nav-step" href="#map-columns">'
+    '<span class="nav-num">1</span><span class="nav-label">Map Columns</span>'
+    '<div class="nav-desc">Discover source columns and run the AI mapping agent</div></a>',
+    unsafe_allow_html=True,
+)
+st.sidebar.markdown(
+    '<a class="nav-step" href="#review-mappings">'
+    '<span class="nav-num">2</span><span class="nav-label">Review Mappings</span>'
+    '<div class="nav-desc">Approve, reject, or reassign AI proposals</div></a>',
+    unsafe_allow_html=True,
+)
+st.sidebar.markdown(
+    '<a class="nav-step" href="#master-fields">'
+    '<span class="nav-num">3</span><span class="nav-label">Master Fields</span>'
+    '<div class="nav-desc">Manage canonical field registry, gold views, and rules</div></a>',
+    unsafe_allow_html=True,
+)
+
 st.sidebar.divider()
 st.sidebar.caption(f"Signed in as **{current_user}**")
 st.sidebar.caption(f"`{CATALOG}`.`{SCHEMA}`")
@@ -653,16 +772,29 @@ if st.sidebar.button("Reload data"):
     invalidate()
     st.rerun()
 
+
 # =====================================================================
 # TOP TAB NAVIGATION
 # =====================================================================
-tab_mapping, tab_approved, tab_master = st.tabs(["Data Mapping", "Approved Mappings", "Master File Management"])
+TAB_LABELS = [
+    ":material/sync: **1. Map Columns**",
+    ":material/checklist: **2. Review Mappings**",
+    ":material/database: **3. Master Fields**",
+]
+tab_map, tab_review, tab_master = st.tabs(TAB_LABELS)
+
 
 # =====================================================================
-# PAGE 1: DATA MAPPING
+# TAB 1: MAP COLUMNS
 # =====================================================================
-with tab_mapping:
-    st.markdown("## Data Mapping")
+with tab_map:
+    st.markdown('<div id="map-columns"></div>', unsafe_allow_html=True)
+    st.markdown("## Map Columns")
+    st.caption(
+        "Discover columns from platform schemas, then run the AI agent "
+        "to propose canonical matches for unmapped columns. "
+        "Once complete, move to the **Review Mappings** tab."
+    )
 
     if "auto_discovered" not in st.session_state:
         with st.spinner("Discovering source columns from platform schemas..."):
@@ -676,32 +808,20 @@ with tab_mapping:
     canonical_raw = load_canonical()
 
     col_lookup = {c["column_id"]: c for c in source_cols}
-    canon_lookup = {c["canonical_id"]: c for c in canonical_raw}
 
     pending = [p for p in proposals if p.get("status") == "pending_review"]
     approved_proposals = [p for p in proposals if p.get("status") == "approved"]
-
-    total_proposals = len(proposals)
-    total_approved = len(approved_proposals)
     proposed_ids = {p.get("column_id") for p in proposals}
     unmapped_for_agent = len([c for c in source_cols if c["column_id"] not in proposed_ids])
 
-    # -- Summary metrics --
     s1, s2, s3, s4 = st.columns(4)
     s1.metric("Source Columns", len(source_cols))
     s2.metric("Unmapped", unmapped_for_agent)
     s3.metric("Pending Review", len(pending))
-    s4.metric("Approved", total_approved)
+    s4.metric("Approved", len(approved_proposals))
 
-    # ----------------------------------------------------------------
-    # STEP 1: Run the Mapping
-    # ----------------------------------------------------------------
     st.divider()
-    st.markdown("### Step 1 -- Run the Mapping")
-    st.caption(
-        "Discover columns from platform schemas, then run the AI agent "
-        "to propose canonical matches for unmapped columns."
-    )
+    st.markdown("### Platform Data Sources")
 
     plat_col_counts: dict[str, dict] = {}
     for c in source_cols:
@@ -736,6 +856,9 @@ with tab_mapping:
             })
         st.dataframe(pd.DataFrame(plat_rows), use_container_width=True, hide_index=True)
 
+    st.divider()
+    st.markdown("### Actions")
+
     bc1, bc2, bc3 = st.columns([1, 1, 3])
     with bc1:
         if st.button("Discover Columns", type="primary", key="discover_btn"):
@@ -767,16 +890,37 @@ with tab_mapping:
                 st.toast("No new proposals needed (all columns already have proposals).")
             st.rerun()
 
-    # ----------------------------------------------------------------
-    # STEP 2: Review the Mapping
-    # ----------------------------------------------------------------
-    st.divider()
-    st.markdown("### Step 2 -- Review the Mapping")
+    if len(pending) > 0:
+        st.divider()
+        st.success(
+            f"**{len(pending)} proposal(s) ready for review.** "
+            f"Switch to the **Review Mappings** tab to approve, reject, or reassign."
+        )
+
+
+# =====================================================================
+# TAB 2: REVIEW MAPPINGS
+# =====================================================================
+with tab_review:
+    st.markdown('<div id="review-mappings"></div>', unsafe_allow_html=True)
+    st.markdown("## Review Mappings")
     st.caption(
         "Filter and review AI proposals. Select rows to approve, reject, "
-        "flag, or reassign to a different canonical field."
+        "flag, or reassign to a different canonical field. "
+        "If a canonical field is missing, create one in the **Master Fields** tab."
     )
 
+    proposals = load_proposals()
+    source_cols = load_source_columns()
+    approved = load_approved_mappings()
+    canonical_raw = load_canonical()
+
+    col_lookup = {c["column_id"]: c for c in source_cols}
+    canon_lookup = {c["canonical_id"]: c for c in canonical_raw}
+
+    pending = [p for p in proposals if p.get("status") == "pending_review"]
+
+    # -- Filters --
     fc1, fc2, fc3 = st.columns([1, 1, 2])
     with fc1:
         wq_plat = st.selectbox(
@@ -816,10 +960,11 @@ with tab_mapping:
     sel_proposal_ids = []
 
     if not display_proposals:
+        total_proposals = len(proposals)
         if total_proposals == 0 and len(source_cols) == 0:
-            st.info("No source columns discovered yet. Run Step 1 above to get started.")
+            st.info("No source columns discovered yet. Use the **Map Columns** tab to get started.")
         elif total_proposals == 0:
-            st.info("Source columns discovered but no proposals yet. Run the Mapping Agent in Step 1.")
+            st.info("Source columns discovered but no proposals yet. Run the Mapping Agent in the **Map Columns** tab.")
         else:
             st.info("No proposals match the current filters.")
     else:
@@ -981,95 +1126,12 @@ with tab_mapping:
                         st.toast("Approved" + (" (reassigned)" if reassigned else "") + ".")
                         st.rerun()
 
-    # ----------------------------------------------------------------
-    # STEP 3: Create New Canonical Fields
-    # ----------------------------------------------------------------
+    # -- Approved Mappings Matrix --
     st.divider()
-    st.markdown("### Step 3 -- Create New Canonical Fields")
+    st.markdown("### Approved Mapping Matrix")
     st.caption(
-        "If the agent couldn't find a good match, create a new canonical field "
-        "and optionally link it to the selected proposal."
-    )
-
-    sel_prop_for_create = None
-    sel_col_for_create = {}
-    if len(sel_proposal_ids) == 1 and display_proposals:
-        sel_prop_for_create = next(
-            (p for p in display_proposals if p["proposal_id"] == sel_proposal_ids[0]), None
-        )
-        if sel_prop_for_create:
-            sel_col_for_create = col_lookup.get(sel_prop_for_create.get("column_id"), {})
-
-    if sel_prop_for_create:
-        st.info(
-            f"Creating a new field for: **{sel_col_for_create.get('column_name', '')}** "
-            f"({PLAT_NAMES.get(sel_col_for_create.get('platform_id', ''), '')}). "
-            f"The new field will be linked to this proposal automatically."
-        )
-        default_new_name = sel_col_for_create.get("column_name", "").lower().replace(" ", "_")
-    else:
-        st.info("Select a single proposal in Step 2 above to auto-link, or create a standalone entry.")
-        default_new_name = ""
-
-    nc1, nc2, nc3 = st.columns(3)
-    with nc1:
-        new_name = st.text_input("Standardized Name", value=default_new_name, key="wq_new_name")
-    with nc2:
-        new_type = st.selectbox("Data Type", ["string", "integer", "decimal", "date", "timestamp", "boolean"], key="wq_new_type")
-    with nc3:
-        new_domain = st.selectbox("Domain", ["Financial", "Identity", "Temporal", "Operational", "Geographic", "Reference", "Organizational"], key="wq_new_domain")
-    new_def = st.text_input("Business Definition", key="wq_new_def", placeholder="e.g. Unique identifier for a fund entity")
-
-    if new_name and canonical_raw:
-        similar = find_similar_canonicals(new_name, canonical_raw, threshold=0.6)
-        if similar:
-            st.warning("Similar entries already exist: " + ", ".join(f"**{s[0]}** ({s[1]:.0%})" for s in similar[:5]))
-
-    create_label = "Create and Link" if sel_prop_for_create else "Create Entry"
-    if st.button(create_label, type="primary", disabled=not new_name, key="wq_create_link"):
-        cid = uuid.uuid4().hex[:12]
-        run_stmt(
-            f"INSERT INTO {T_CANONICAL} "
-            f"(canonical_id, canonical_name, data_type, business_definition, "
-            f"domain_category, is_active, created_by, created_at, updated_at) "
-            f"VALUES ({_esc(cid)}, {_esc(new_name)}, {_esc(new_type)}, "
-            f"{_esc(new_def)}, {_esc(new_domain)}, true, "
-            f"{_esc(current_user)}, current_timestamp(), current_timestamp())"
-        )
-        log_audit("canonical", cid, "created", current_user, {"name": new_name})
-
-        if sel_prop_for_create:
-            mid = uuid.uuid4().hex[:12]
-            run_stmt(
-                f"INSERT INTO {T_APPROVED} "
-                f"(mapping_id, column_id, canonical_id, proposal_id, approved_by, approved_at) "
-                f"VALUES ({_esc(mid)}, {_esc(sel_prop_for_create['column_id'])}, "
-                f"{_esc(cid)}, {_esc(sel_prop_for_create['proposal_id'])}, "
-                f"{_esc(current_user)}, current_timestamp())"
-            )
-            run_stmt(
-                f"UPDATE {T_PROPOSALS} SET status = 'approved', "
-                f"reviewed_at = current_timestamp(), reviewed_by = {_esc(current_user)} "
-                f"WHERE proposal_id = {_esc(sel_prop_for_create['proposal_id'])}"
-            )
-            log_audit("mapping", mid, "approved", current_user,
-                      {"canonical_id": cid, "new_entry": True})
-            st.toast(f"Created '{new_name}' and linked mapping.")
-        else:
-            st.toast(f"Created canonical field '{new_name}'.")
-
-        invalidate()
-        st.rerun()
-
-
-# =====================================================================
-# PAGE 2: APPROVED MAPPINGS (matrix view)
-# =====================================================================
-with tab_approved:
-    st.markdown("## Approved Mappings")
-    st.caption(
-        "Matrix view of all approved mappings: canonical fields vs. source systems. "
-        "Each cell shows the source column name that maps to that canonical field."
+        "Canonical fields vs. source systems. "
+        "Each cell shows the source column name mapped to that canonical field."
     )
 
     _ap_approved = load_approved_mappings()
@@ -1077,12 +1139,11 @@ with tab_approved:
     _ap_canonical = load_canonical()
 
     if not _ap_approved:
-        st.info("No approved mappings yet. Approve proposals in the Data Mapping tab to populate this view.")
+        st.info("No approved mappings yet. Approve proposals above to populate this matrix.")
     else:
         _ap_col_lookup = {c["column_id"]: c for c in _ap_source}
         _ap_canon_lookup = {c["canonical_id"]: c for c in _ap_canonical}
 
-        # Build {canonical_id -> {platform_id -> [column_names]}}
         matrix_data: dict[str, dict[str, list[str]]] = {}
         for m in _ap_approved:
             cid = m.get("canonical_id", "")
@@ -1093,7 +1154,6 @@ with tab_approved:
             cname = col.get("column_name", "")
             matrix_data.setdefault(cid, {}).setdefault(pid, []).append(cname)
 
-        # Filters
         af1, af2 = st.columns([2, 1])
         with af1:
             ap_search = st.text_input(
@@ -1108,7 +1168,6 @@ with tab_approved:
                 key="ap_plat_filter",
             )
 
-        # Build rows: one per canonical field that has at least one mapping
         matrix_rows = []
         for cid, plat_map in sorted(
             matrix_data.items(),
@@ -1142,7 +1201,6 @@ with tab_approved:
             pname = PLAT_NAMES[ap_plat_filter]
             matrix_rows = [r for r in matrix_rows if r.get(pname, "")]
 
-        # Metrics
         total_canonical_mapped = len(matrix_data)
         total_links = sum(
             sum(len(cols) for cols in plat_map.values())
@@ -1160,19 +1218,17 @@ with tab_approved:
         best_plat = max(plat_coverage, key=plat_coverage.get) if plat_coverage else ""
         am4.metric("Best Coverage", f"{PLAT_NAMES.get(best_plat, '')} ({plat_coverage.get(best_plat, 0)})" if best_plat else "N/A")
 
-        st.divider()
-
         if not matrix_rows:
             st.info("No mappings match the current filters.")
         else:
             matrix_df = pd.DataFrame(matrix_rows)
-            display_cols = ["Canonical Field", "Domain", "Type"]
-            display_cols += [PLAT_NAMES[pid] for pid in PLAT_IDS]
-            display_cols.append("Coverage")
-            show_cols = [c for c in display_cols if c in matrix_df.columns]
+            matrix_display_cols = ["Canonical Field", "Domain", "Type"]
+            matrix_display_cols += [PLAT_NAMES[pid] for pid in PLAT_IDS]
+            matrix_display_cols.append("Coverage")
+            matrix_show_cols = [c for c in matrix_display_cols if c in matrix_df.columns]
 
             st.dataframe(
-                matrix_df[show_cols],
+                matrix_df[matrix_show_cols],
                 use_container_width=True,
                 hide_index=True,
                 height=min(len(matrix_rows) * 35 + 38, 800),
@@ -1180,7 +1236,6 @@ with tab_approved:
 
             st.divider()
 
-            # Per-platform summary
             st.markdown("### Platform Coverage Summary")
             summary_rows = []
             for pid in PLAT_IDS:
@@ -1206,8 +1261,7 @@ with tab_approved:
                 hide_index=True,
             )
 
-            # Download
-            csv_data = matrix_df[show_cols].to_csv(index=False)
+            csv_data = matrix_df[matrix_show_cols].to_csv(index=False)
             st.download_button(
                 "Download Mapping Matrix (CSV)",
                 csv_data,
@@ -1218,13 +1272,15 @@ with tab_approved:
 
 
 # =====================================================================
-# PAGE 3: MASTER FILE MANAGEMENT
+# TAB 3: MASTER FIELDS
 # =====================================================================
 with tab_master:
-    st.markdown("## Master File Management")
+    st.markdown('<div id="master-fields"></div>', unsafe_allow_html=True)
+    st.markdown("## Master Fields")
     st.caption(
-        "Manage standardized master entries that serve as the canonical reference "
-        "for data mapping across all platforms."
+        "Manage the canonical field registry that serves as the standard reference "
+        "for data mapping across all platforms. "
+        "Create new fields here when the AI agent can't find a suitable match."
     )
 
     canonical_raw = load_canonical()
@@ -1240,16 +1296,55 @@ with tab_master:
     coverage = (mapped_count / total_source_cols * 100) if total_source_cols else 0
 
     ms1, ms2, ms3, ms4 = st.columns(4)
-    ms1.metric("Active Master Entries", len(canonical_raw))
+    ms1.metric("Canonical Fields", len(canonical_raw))
     ms2.metric("Total Mappings", len(approved))
     ms3.metric("Unmapped Headers", unmapped_count)
     ms4.metric("Coverage", f"{coverage:.1f}%")
 
+    # -- Create new canonical field --
     st.divider()
+    st.markdown("### Create New Canonical Field")
+    st.caption(
+        "Add a new standardized field to the canonical registry. "
+        "Once created, the mapping agent will include it as a candidate for future proposals."
+    )
+
+    nc1, nc2, nc3 = st.columns(3)
+    with nc1:
+        new_name = st.text_input("Standardized Name", key="mf_new_name", placeholder="e.g. fund_identifier")
+    with nc2:
+        new_type = st.selectbox("Data Type", ["string", "integer", "decimal", "date", "timestamp", "boolean"], key="mf_new_type")
+    with nc3:
+        new_domain = st.selectbox("Domain", ["Financial", "Identity", "Temporal", "Operational", "Geographic", "Reference", "Organizational"], key="mf_new_domain")
+    new_def = st.text_input("Business Definition", key="mf_new_def", placeholder="e.g. Unique identifier for a fund entity")
+
+    if new_name and canonical_raw:
+        similar = find_similar_canonicals(new_name, canonical_raw, threshold=0.6)
+        if similar:
+            st.warning("Similar entries already exist: " + ", ".join(f"**{s[0]}** ({s[1]:.0%})" for s in similar[:5]))
+
+    if st.button("Create Field", type="primary", disabled=not new_name, key="mf_create"):
+        cid = uuid.uuid4().hex[:12]
+        run_stmt(
+            f"INSERT INTO {T_CANONICAL} "
+            f"(canonical_id, canonical_name, data_type, business_definition, "
+            f"domain_category, is_active, created_by, created_at, updated_at) "
+            f"VALUES ({_esc(cid)}, {_esc(new_name)}, {_esc(new_type)}, "
+            f"{_esc(new_def)}, {_esc(new_domain)}, true, "
+            f"{_esc(current_user)}, current_timestamp(), current_timestamp())"
+        )
+        log_audit("canonical", cid, "created", current_user, {"name": new_name})
+        invalidate()
+        st.toast(f"Created canonical field '{new_name}'.")
+        st.rerun()
+
+    # -- Canonical field registry --
+    st.divider()
+    st.markdown("### Canonical Field Registry")
 
     mf1, mf2 = st.columns([2, 1])
     with mf1:
-        mf_search = st.text_input("Search master entries...", key="mf_search")
+        mf_search = st.text_input("Search fields...", key="mf_search")
     with mf2:
         domains = sorted(set(c.get("domain_category", "") for c in canonical_raw if c.get("domain_category")))
         mf_domain = st.selectbox("Domain", ["All"] + domains, key="mf_domain")
@@ -1272,14 +1367,7 @@ with tab_master:
         if col:
             canon_coverage.setdefault(cid, {}).setdefault(col["platform_id"], []).append(col["column_name"])
 
-    # -- Action buttons --
-    btn1, btn2, btn3 = st.columns([6, 1, 1])
-    with btn2:
-        show_create = st.button("Create Master Entry", key="show_create_btn")
-    with btn3:
-        show_report = st.button("Generate Report", key="gen_report_btn")
-
-    if show_report:
+    if st.button("Download Report (CSV)", key="gen_report_btn"):
         report_data = []
         for c in canonical_raw:
             plat_cov = canon_coverage.get(c["canonical_id"], {})
@@ -1292,45 +1380,14 @@ with tab_master:
                 "Total Mappings": sum(len(v) for v in plat_cov.values()),
             })
         st.download_button(
-            "Download CSV Report",
+            "Download CSV",
             pd.DataFrame(report_data).to_csv(index=False),
-            "master_file_report.csv",
+            "canonical_fields_report.csv",
             "text/csv",
         )
 
-    if show_create:
-        with st.container():
-            st.markdown("#### New Master Entry")
-            cc1, cc2 = st.columns(2)
-            with cc1:
-                cn_name = st.text_input("Standardized Name", key="cn_name", placeholder="e.g. fund_identifier")
-                cn_type = st.selectbox("Data Type", ["string", "integer", "decimal", "date", "timestamp", "boolean"], key="cn_type")
-            with cc2:
-                cn_domain = st.selectbox("Domain", ["Financial", "Identity", "Temporal", "Operational", "Geographic", "Reference", "Organizational"], key="cn_domain")
-                cn_def = st.text_input("Business Definition", key="cn_def", placeholder="Unique identifier for a fund entity")
-
-            if cn_name and canonical_raw:
-                similar = find_similar_canonicals(cn_name, canonical_raw, threshold=0.6)
-                if similar:
-                    st.warning("Similar existing entries: " + ", ".join(f"**{s[0]}** ({s[1]:.0%})" for s in similar[:5]))
-
-            if st.button("Create Entry", type="primary", disabled=not cn_name, key="cn_create"):
-                cid = uuid.uuid4().hex[:12]
-                run_stmt(
-                    f"INSERT INTO {T_CANONICAL} "
-                    f"(canonical_id, canonical_name, data_type, business_definition, "
-                    f"domain_category, is_active, created_by, created_at, updated_at) "
-                    f"VALUES ({_esc(cid)}, {_esc(cn_name)}, {_esc(cn_type)}, "
-                    f"{_esc(cn_def)}, {_esc(cn_domain)}, true, "
-                    f"{_esc(current_user)}, current_timestamp(), current_timestamp())"
-                )
-                log_audit("canonical", cid, "created", current_user, {"name": cn_name})
-                invalidate()
-                st.toast(f"Created: {cn_name}")
-                st.rerun()
-
     if not canon_display:
-        st.info("No master entries found. Create one or wait for batch proposals to be approved.")
+        st.info("No canonical fields found. Create one above.")
     else:
         master_rows = []
         for c in canon_display:
@@ -1338,24 +1395,23 @@ with tab_master:
             plat_cov = canon_coverage.get(cid, {})
             mapped_headers = sum(len(v) for v in plat_cov.values())
             coverage_text = ", ".join(
-                f"{PLAT_NAMES[pid]}({len(cols)})" for pid in PLAT_IDS if pid in plat_cov
+                f"{PLAT_NAMES[pid]}({len(plat_cov[pid])})" for pid in PLAT_IDS if pid in plat_cov
             ) if plat_cov else "--"
 
             master_rows.append({
                 "canonical_id": cid,
-                "Standardized Name": c.get("canonical_name", ""),
-                "Business Definition": (c.get("business_definition") or "")[:100],
+                "Name": c.get("canonical_name", ""),
+                "Definition": (c.get("business_definition") or "")[:100],
                 "Platform Coverage": coverage_text,
                 "Mapped Headers": mapped_headers,
-                "Domain Category": c.get("domain_category", ""),
-                "Data Type": c.get("data_type", ""),
-                "Status": "Active",
+                "Domain": c.get("domain_category", ""),
+                "Type": c.get("data_type", ""),
             })
 
         master_df = pd.DataFrame(master_rows)
 
-        show_master_cols = [c for c in ["Standardized Name", "Business Definition", "Platform Coverage",
-                                         "Mapped Headers", "Domain Category", "Data Type", "Status"]
+        show_master_cols = [c for c in ["Name", "Definition", "Platform Coverage",
+                                         "Mapped Headers", "Domain", "Type"]
                            if c in master_df.columns]
 
         master_event = st.dataframe(
@@ -1387,7 +1443,7 @@ with tab_master:
                 )
 
                 header_badges = " ".join(
-                    platform_badge_html(pid, len(cols))
+                    platform_badge_html(pid, len(plat_cov[pid]))
                     for pid in PLAT_IDS if pid in plat_cov
                 )
                 st.markdown(
@@ -1402,24 +1458,24 @@ with tab_master:
                 if sel_canon.get("business_definition"):
                     st.caption(sel_canon["business_definition"])
 
-                dc1, dc2, dc3, dc4 = st.columns(4)
-                dc1.metric("Platform Coverage", f"{covered_plats}/{total_plats}")
-                dc2.metric("Total Mappings", total_mapped)
-                dc3.metric("Data Type", sel_canon.get("data_type", "N/A"))
+                dd1, dd2, dd3, dd4 = st.columns(4)
+                dd1.metric("Platform Coverage", f"{covered_plats}/{total_plats}")
+                dd2.metric("Total Mappings", total_mapped)
+                dd3.metric("Data Type", sel_canon.get("data_type", "N/A"))
                 status_parts = []
                 if linked_count:
                     status_parts.append(f"{linked_count} Linked")
                 if pending_count:
                     status_parts.append(f"{pending_count} Pending")
-                dc4.metric("Status", ", ".join(status_parts) if status_parts else "No mappings")
+                dd4.metric("Status", ", ".join(status_parts) if status_parts else "No mappings")
 
                 if plat_cov:
                     plat_tabs = st.tabs([
                         f"{PLAT_NAMES.get(pid, pid)} ({len(cols)})"
                         for pid, cols in plat_cov.items()
                     ])
-                    for tab, (pid, col_names) in zip(plat_tabs, plat_cov.items()):
-                        with tab:
+                    for ptab, (pid, col_names) in zip(plat_tabs, plat_cov.items()):
+                        with ptab:
                             st.markdown(
                                 f"Showing {len(col_names)} mapping(s) for "
                                 f"{platform_badge_html(pid)}",
@@ -1486,7 +1542,7 @@ with tab_master:
     )
 
     if not approved:
-        st.info("Approve mappings in the Data Mapping page to generate gold views.")
+        st.info("Approve mappings in the Review Mappings tab to generate gold views.")
     else:
         mf_canon_lookup = {c["canonical_id"]: c for c in canonical_raw}
 
@@ -1527,6 +1583,10 @@ with tab_master:
                             st.code(sql, language="sql")
             with gc2:
                 if st.button("Execute Gold Views", type="primary", key="exec_gold"):
+                    try:
+                        run_stmt(f"CREATE SCHEMA IF NOT EXISTS {GOLD_CATALOG}.{GOLD_SCHEMA}")
+                    except Exception as exc:
+                        st.error(f"Could not create schema {GOLD_CATALOG}.{GOLD_SCHEMA}: {exc}")
                     created = 0
                     for tbl, info in tables_with_mappings.items():
                         sql = generate_gold_view_sql(tbl, approved, source_cols, canonical_raw, info["platform_id"])
@@ -1547,9 +1607,9 @@ with tab_master:
         rules = load_rules()
         if rules:
             rules_df = pd.DataFrame(rules)
-            display_cols = [c for c in ["rule_id", "rule_type", "pattern", "replacement", "description", "is_active"]
-                           if c in rules_df.columns]
-            st.dataframe(rules_df[display_cols], use_container_width=True, hide_index=True, height=300)
+            rules_display_cols = [c for c in ["rule_id", "rule_type", "pattern", "replacement", "description", "is_active"]
+                                  if c in rules_df.columns]
+            st.dataframe(rules_df[rules_display_cols], use_container_width=True, hide_index=True, height=300)
         else:
             st.info("No rules configured yet.")
 
@@ -1611,9 +1671,9 @@ with tab_master:
                 aud2.metric("Unique Actors", adf["actor"].nunique())
                 aud3.metric("Entity Types", adf["entity_type"].nunique())
 
-            cols = [c for c in ["created_at", "entity_type", "entity_id", "action", "actor", "details"]
-                    if c in adf.columns]
-            st.dataframe(adf[cols].reset_index(drop=True), use_container_width=True, hide_index=True, height=500)
+            audit_cols = [c for c in ["created_at", "entity_type", "entity_id", "action", "actor", "details"]
+                          if c in adf.columns]
+            st.dataframe(adf[audit_cols].reset_index(drop=True), use_container_width=True, hide_index=True, height=500)
         else:
             st.info("No audit events recorded yet.")
 

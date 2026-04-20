@@ -53,8 +53,14 @@ print(f"Platforms: {len(platforms)}")
 
 # Step 1: Create catalog, main schema, and platform schemas
 
+gold_cfg = cfg.get("gold", {})
+GOLD_CATALOG = gold_cfg.get("catalog", CATALOG)
+GOLD_SCHEMA = gold_cfg.get("schema", "gold")
+
 spark.sql(f"CREATE CATALOG IF NOT EXISTS {CATALOG}")
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {GOLD_CATALOG}.{GOLD_SCHEMA}")
+print(f"  Gold schema: {GOLD_CATALOG}.{GOLD_SCHEMA}")
 for plat in platforms:
     src_schema = plat.get("source_schema", plat["id"])
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{src_schema}")
@@ -213,7 +219,7 @@ try:
     app = w.apps.get(APP_NAME)
     sp_id = app.service_principal_client_id
     spark.sql(
-        f"GRANT USE_CATALOG, USE_SCHEMA, SELECT, MODIFY "
+        f"GRANT USE_CATALOG, USE_SCHEMA, CREATE_SCHEMA, SELECT, MODIFY "
         f"ON CATALOG {CATALOG} TO `{sp_id}`"
     )
     print(f"  Granted catalog permissions to app service principal: {sp_id}")
