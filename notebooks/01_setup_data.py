@@ -27,8 +27,12 @@ parts = nb_path.split("/")
 repo_root_ws = "/".join(parts[: parts.index("notebooks")]) if "notebooks" in parts else "/".join(parts[:-1])
 
 cfg_path = repo_root_ws + "/config.yaml"
-with open(cfg_path.replace("/Workspace", "")) as f:
-    cfg = yaml.safe_load(f)
+try:
+    with open(cfg_path) as f:
+        cfg = yaml.safe_load(f)
+except FileNotFoundError:
+    with open(cfg_path.replace("/Workspace", "")) as f:
+        cfg = yaml.safe_load(f)
 
 db = cfg.get("databricks", {})
 tables_cfg = cfg.get("tables", {})
@@ -142,7 +146,10 @@ for table_name, ddl in ddls.items():
 import pandas as pd
 from pyspark.sql.functions import current_timestamp, lit
 
-data_dir = repo_root_ws.replace("/Workspace", "") + "/data"
+import os
+data_dir = repo_root_ws + "/data"
+if not os.path.isdir(data_dir):
+    data_dir = repo_root_ws.replace("/Workspace", "") + "/data"
 
 canonical_pdf = pd.read_csv(f"{data_dir}/canonical_fields.csv")
 canonical_df = spark.createDataFrame(canonical_pdf)
@@ -164,22 +171,14 @@ print(f"  Loaded {rules_pdf.shape[0]} rules into {T_RULES}")
 
 # Step 4: Load platform CSVs into their respective schemas
 
-PLATFORM_FILES = {
-    "alpha_ledger": ("alpha_ledger_positions.csv", "positions"),
-    "summit_books": ("summit_books_investors.csv", "investors"),
-    "trade_core": ("trade_core_transactions.csv", "transactions"),
-    "capital_track": ("capital_track_commitments.csv", "commitments"),
-    "realty_ops": ("realty_ops_properties.csv", "properties"),
-    "dist_calc": ("dist_calc_distributions.csv", "distributions"),
-}
-
 for plat in platforms:
     pid = plat["id"]
-    if pid not in PLATFORM_FILES:
-        print(f"  Skipping {pid}: no CSV file mapped")
+    csv_file = plat.get("seed_csv")
+    table_name = plat.get("seed_table")
+    if not csv_file or not table_name:
+        print(f"  Skipping {pid}: no seed_csv/seed_table in config.yaml")
         continue
 
-    csv_file, table_name = PLATFORM_FILES[pid]
     src_schema = plat.get("source_schema", pid)
     fq_table = f"{CATALOG}.{src_schema}.{table_name}"
 
@@ -197,3 +196,27 @@ for t in [T_SOURCE, T_PROPOSALS, T_APPROVED, T_AUDIT]:
     print(f"  Truncated {t}")
 
 print("\nSetup complete. Run 02_run_mapping_agent next.")
+
+# COMMAND ----------
+
+# Step 6: Grant app service principal access to the catalog
+#
+# The Databricks App runs as a service principal that needs
+# USE_CATALOG, USE_SCHEMA, SELECT, and MODIFY on the catalog.
+# This step looks up the app by name and grants permissions.
+
+APP_NAME = db.get("app_name", "column-mapper")
+
+try:
+    from databricks.sdk import WorkspaceClient
+    w = WorkspaceClient()
+    app = w.apps.get(APP_NAME)
+    sp_id = app.service_principal_client_id
+    spark.sql(
+        f"GRANT USE_CATALOG, USE_SCHEMA, SELECT, MODIFY "
+        f"ON CATALOG {CATALOG} TO `{sp_id}`"
+    )
+    print(f"  Granted catalog permissions to app service principal: {sp_id}")
+except Exception as e:
+    print(f"  Note: Could not grant app permissions (app may not exist yet): {e}")
+    print(f"  Re-run this job after 'databricks bundle run column_mapper' creates the app.")

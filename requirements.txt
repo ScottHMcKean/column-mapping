@@ -1,0 +1,5 @@
+streamlit==1.38.0
+databricks-sdk>=0.40.0
+pandas>=1.5.0
+pyyaml>=6.0
+rank-bm25>=0.2.2

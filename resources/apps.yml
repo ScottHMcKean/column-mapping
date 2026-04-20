@@ -1,9 +1,11 @@
-# App deployment blocked by workspace SP quota (20k limit).
-# Uncomment when deploying to a workspace with available SP slots.
-#
-# resources:
-#   apps:
-#     column_mapping:
-#       name: column-mapper
-#       description: "Column Mapper -- standardize and match column headers across platforms"
-#       source_code_path: ../app
+resources:
+  apps:
+    column_mapper:
+      name: ${var.app_name}
+      description: "Column Mapper -- standardize and match column headers across platforms"
+      source_code_path: ..
+      resources:
+        - name: sql-warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE

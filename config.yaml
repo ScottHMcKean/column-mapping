@@ -3,6 +3,7 @@ databricks:
   schema: mapping
   warehouse_id: 148ccb90800933a1
   profile: DEFAULT
+  app_name: column-mapper
 
 tables:
   canonical_fields: canonical_fields
@@ -18,35 +19,55 @@ platforms:
     source_catalog: column_mapping
     source_schema: alpha_ledger
     description: Fund Administration (legacy)
+    seed_csv: alpha_ledger_positions.csv
+    seed_table: positions
   - id: summit_books
     name: Summit Books
     source_catalog: column_mapping
     source_schema: summit_books
     description: Fund Administration (next-gen)
+    seed_csv: summit_books_investors.csv
+    seed_table: investors
   - id: capital_track
     name: Capital Track
     source_catalog: column_mapping
     source_schema: capital_track
     description: Private Equity Fund Administration
+    seed_csv: capital_track_commitments.csv
+    seed_table: commitments
   - id: trade_core
     name: Trade Core
     source_catalog: column_mapping
     source_schema: trade_core
     description: Investment Operations
+    seed_csv: trade_core_transactions.csv
+    seed_table: transactions
   - id: realty_ops
     name: Realty Ops
     source_catalog: column_mapping
     source_schema: realty_ops
     description: Real Estate Fund Administration
+    seed_csv: realty_ops_properties.csv
+    seed_table: properties
   - id: dist_calc
     name: Dist Calc
     source_catalog: column_mapping
     source_schema: dist_calc
     description: Distribution Waterfall Calculations
+    seed_csv: dist_calc_distributions.csv
+    seed_table: distributions
 
 gold:
   catalog: column_mapping
   schema: gold
+
+agent:
+  confidence_high_min: 85
+  confidence_medium_min: 60
+  deterministic_exact_confidence: 95
+  deterministic_near_confidence: 90
+  max_concurrent_llm_calls: 8
+  max_rationale_length: 500
 
 llm:
   endpoint: databricks-claude-sonnet-4-5

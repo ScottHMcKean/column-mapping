@@ -37,8 +37,12 @@ if importlib.util.find_spec("column_mapping") is None:
 import yaml
 
 cfg_path = repo_root_ws + "/config.yaml"
-with open(cfg_path.replace("/Workspace", "")) as f:
-    cfg = yaml.safe_load(f)
+try:
+    with open(cfg_path) as f:
+        cfg = yaml.safe_load(f)
+except FileNotFoundError:
+    with open(cfg_path.replace("/Workspace", "")) as f:
+        cfg = yaml.safe_load(f)
 
 db = cfg.get("databricks", {})
 tables = cfg.get("tables", {})
@@ -46,6 +50,11 @@ platforms = cfg.get("platforms", [])
 CATALOG = db.get("catalog", "column_mapping")
 SCHEMA = db.get("schema", "mapping")
 LLM_ENDPOINT = cfg.get("llm", {}).get("endpoint", "databricks-claude-sonnet-4-5")
+
+agent_cfg = cfg.get("agent", {})
+CONFIDENCE_HIGH_MIN = agent_cfg.get("confidence_high_min", 85)
+CONFIDENCE_MEDIUM_MIN = agent_cfg.get("confidence_medium_min", 60)
+MAX_RATIONALE_LEN = agent_cfg.get("max_rationale_length", 500)
 
 
 def fqn(key):
@@ -201,8 +210,8 @@ for item in results:
     res = item["result"]
 
     confidence_level = (
-        "high" if res.confidence >= 85
-        else "medium" if res.confidence >= 60
+        "high" if res.confidence >= CONFIDENCE_HIGH_MIN
+        else "medium" if res.confidence >= CONFIDENCE_MEDIUM_MIN
         else "low"
     )
 
@@ -214,7 +223,7 @@ for item in results:
         f"VALUES ({esc(prop_id)}, {esc(col['column_id'])}, "
         f"{esc(res.recommended_canonical_id)}, {esc(res.recommended_canonical_name)}, "
         f"{res.confidence}, {esc(confidence_level)}, "
-        f"{esc((res.rationale or '')[:500])}, {esc(LLM_ENDPOINT)}, "
+        f"{esc((res.rationale or '')[:MAX_RATIONALE_LEN])}, {esc(LLM_ENDPOINT)}, "
         f"{esc(BATCH_ID)}, 'pending_review', current_timestamp())"
     )
 

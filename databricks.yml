@@ -4,5 +4,22 @@ bundle:
 include:
   - resources/*.yml
 
+variables:
+  warehouse_id:
+    description: SQL warehouse ID
+    default: "148ccb90800933a1"
+  catalog:
+    description: Unity Catalog catalog name
+    default: "column_mapping"
+  app_name:
+    description: Databricks App name
+    default: "column-mapper"
+
 workspace:
   root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+
+targets:
+  default:
+    default: true
+    workspace:
+      profile: DEFAULT

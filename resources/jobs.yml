@@ -5,23 +5,13 @@ resources:
       max_concurrent_runs: 1
       tasks:
         - task_key: setup
-          environment_key: default
           notebook_task:
             notebook_path: ${workspace.root_path}/files/notebooks/01_setup_data
-      environments:
-        - environment_key: default
-          spec:
-            client: "4"
 
     column_mapping_run_agent:
       name: column-mapping-run-agent
       max_concurrent_runs: 1
       tasks:
         - task_key: run
-          environment_key: default
           notebook_task:
             notebook_path: ${workspace.root_path}/files/notebooks/02_run_mapping_agent
-      environments:
-        - environment_key: default
-          spec:
-            client: "4"
